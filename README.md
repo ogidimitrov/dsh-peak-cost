@@ -1,6 +1,7 @@
 # dsh-peak-cost
 
 [![CI](https://github.com/ogidimitrov/dsh-peak-cost/actions/workflows/ci.yml/badge.svg)](https://github.com/ogidimitrov/dsh-peak-cost/actions/workflows/ci.yml)
+[![Release](https://github.com/ogidimitrov/dsh-peak-cost/actions/workflows/release.yml/badge.svg)](https://github.com/ogidimitrov/dsh-peak-cost/releases)
 [![CodeQL](https://github.com/ogidimitrov/dsh-peak-cost/actions/workflows/codeql.yml/badge.svg)](https://github.com/ogidimitrov/dsh-peak-cost/security/code-scanning)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
