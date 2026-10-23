@@ -1,0 +1,3 @@
+- insert:
+    - id: peak-cost
+      name: 'dsh-peak-cost'

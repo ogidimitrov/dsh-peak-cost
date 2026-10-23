@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Peak hours and session spend">
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="#111b2c"/>
+  <circle cx="32" cy="31" r="17" fill="none" stroke="#314a6b" stroke-width="4"/>
+  <path d="M32 14 A17 17 0 0 1 46.7 23.5" fill="none" stroke="#f2a43a" stroke-width="4" stroke-linecap="round"/>
+  <path d="M32 22 V31.5 L38 35.5" fill="none" stroke="#e9eff8" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M25.5 48.5 h13" stroke="#6f8fb5" stroke-width="3.2" stroke-linecap="round"/>
+  <circle cx="32" cy="31" r="2.2" fill="#e9eff8"/>
+</svg>

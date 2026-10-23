@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Peak Hours & Session Spend",
+    "description": "Adds a line below the composer showing whether DeepSeek billing is in peak hours and the estimated USD spent in this session."
+  }
+}
