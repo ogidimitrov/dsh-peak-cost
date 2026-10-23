@@ -23,8 +23,22 @@ Hovering the line expands it into a breakdown: the billing window and the time u
 |---|---|
 | Slot | `conversation.composer.dock` (below the composer card, beside the shipped activity and context-usage entries) |
 | Scope | Per session |
-| Updates | Spend follows every settled model call; the status label re-evaluates against the clock every 30 s |
+| Updates | Spend follows every settled model call; the status label re-evaluates against the clock every 30 s; the balance refreshes every 60 s |
 | Locales | English and Chinese, following the app's language setting |
+
+### Balance
+
+Next to the session estimate the line also shows your DeepSeek account balance:
+
+```text
+● Off-peak · ≈ $0.18 · bal ¥7.26
+```
+
+It is read from the Host's account Remote (`ctx.remote.account.getBalance`) every 60 seconds — the same call the Settings → Account page makes — and **both wallet kinds are summed**: the recharge wallet plus any bonus/grant wallet, which is why it can differ from a single number on a top-up page. The tooltip breaks the two apart when a bonus wallet exists.
+
+The balance is optional in every direction: a signed-out account, an API-key-only setup, a failed read, or a build without the account transport all simply drop it, leaving the cost line intact. Nothing is cached to disk.
+
+### Cost
 
 ## Install
 

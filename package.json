@@ -1,6 +1,6 @@
 {
   "name": "dsh-peak-cost",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "DeepSeek Harness plugin: peak-hours indicator and estimated USD spend for the current session, rendered under the composer.",
   "type": "module",
   "license": "MIT",

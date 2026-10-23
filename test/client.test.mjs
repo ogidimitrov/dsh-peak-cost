@@ -8,14 +8,24 @@ import test from 'node:test';
  * half's wire view.
  */
 
+const hookStores = new WeakMap();
+let hookCursor = 0;
+let currentComponent;
+
 const React = {
   createElement(type, props, ...children) {
     return { type, props: props ?? {}, children: children.flat() };
   },
   useState(initial) {
-    return [typeof initial === 'function' ? initial() : initial, () => {}];
+    const store = hookStores.get(currentComponent) ?? [];
+    hookStores.set(currentComponent, store);
+    const slot = hookCursor++;
+    if (!(slot in store)) store[slot] = typeof initial === 'function' ? initial() : initial;
+    return [store[slot], (next) => { store[slot] = next; }];
   },
-  useEffect() {},
+  useEffect(effect) {
+    effect();
+  },
   useRef(value) {
     return { current: value };
   },
@@ -61,11 +71,19 @@ function texts(node, into = []) {
 function render(component, value, nowIso) {
   const realNow = Date.now;
   Date.now = () => Date.parse(nowIso);
+  currentComponent = component;
+  hookCursor = 0;
   try {
     return component({ useProjection: () => value });
   } finally {
     Date.now = realNow;
   }
+}
+
+/** Let the pending balance promise settle, then render again from stored hooks. */
+async function settle(component, value, nowIso) {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  return render(component, value, nowIso);
 }
 
 const liveValue = {
@@ -88,32 +106,58 @@ const liveValue = {
   holidays: [],
 };
 
-let registration;
 const dictionaries = [];
-const ctx = {
-  effect: (callback) => callback(),
-  locale: {
-    register(ns, dicts) {
-      dictionaries.push({ ns, dicts });
-      return () => {};
+
+/**
+ * Build a client context with an optional account transport.
+ * @param {object} [account] - `ctx.remote.account` stub.
+ * @returns {{ctx: object, registration: object, dicts: object[]}} context, registration, dictionaries.
+ */
+function makeContext(account) {
+  const registration = {};
+  const dicts = [];
+  const ctx = {
+    effect: (callback) => callback(),
+    locale: {
+      register(ns, dictsValue) {
+        dicts.push({ ns, dicts: dictsValue });
+        return () => {};
+      },
+      getSnapshot: () => ({ active: 'en' }),
+      bind(ns) {
+        const dict = (dicts.find((entry) => entry.ns === ns) ?? dictionaries[0])?.dicts.en ?? {};
+        return (key) => dict[key] ?? key;
+      },
     },
-    bind(ns) {
-      const dict = dictionaries.find((entry) => entry.ns === ns)?.dicts.en ?? {};
-      return (key) => dict[key] ?? key;
+    slots: {
+      inject(owner, callback) {
+        registration.owner = owner;
+        return callback();
+      },
+      register(options, component) {
+        registration.options = options;
+        registration.component = component;
+        return () => {};
+      },
     },
-  },
-  slots: {
-    inject(owner, callback) {
-      registration = { owner };
-      return callback();
-    },
-    register(options, component) {
-      registration.options = options;
-      registration.component = component;
-      return () => {};
-    },
-  },
-};
+  };
+  if (account !== undefined) ctx.remote = { account };
+  return { ctx, registration, dicts };
+}
+
+const base = makeContext();
+const registration = base.registration;
+
+/**
+ * Build a dock component with its own hook store, optionally with an account.
+ * @param {object} [account] - `ctx.remote.account` stub.
+ * @returns {Function} the component.
+ */
+function freshComponent(account) {
+  const made = makeContext(account);
+  loaded.factory(requireStub).apply(made.ctx);
+  return made.registration.component;
+}
 
 test('registers with the module loader under the package name', () => {
   assert.ok(loaded, 'client module registered');
@@ -123,17 +167,18 @@ test('registers with the module loader under the package name', () => {
 test('registers one dock entry and both locale dictionaries', () => {
   const module = loaded.factory(requireStub);
   assert.deepEqual(module.inject, ['slots', 'locale']);
-  module.apply(ctx);
+  module.apply(base.ctx);
 
-  assert.equal(dictionaries.length, 1);
-  assert.equal(dictionaries[0].ns, 'peak-cost');
-  assert.ok(dictionaries[0].dicts.en['status.peak']);
-  assert.ok(dictionaries[0].dicts.zh['status.peak']);
+  assert.equal(base.dicts.length, 1);
+  assert.equal(base.dicts[0].ns, 'peak-cost');
+  assert.ok(base.dicts[0].dicts.en['status.peak']);
+  assert.ok(base.dicts[0].dicts.zh['status.peak']);
 
   assert.equal(registration.owner, 'conversation.composer.dock');
   assert.equal(registration.options.name, 'conversation.composer.dock');
   assert.equal(registration.options.id, 'peak-cost');
   assert.equal(registration.options.order, 2);
+  assert.ok(module.test, 'pure helpers exposed for the suite');
 });
 
 test('renders an approximate off-peak pill with the session amount', () => {
@@ -159,16 +204,84 @@ test('tooltip explains window, next change, spend and the cache discount', () =>
 });
 
 test('switches to peak inside a peak window', () => {
-  const tree = render(registration.component, liveValue, '2026-10-23T02:30:00Z');
+  const tree = render(freshComponent(), liveValue, '2026-10-23T02:30:00Z');
   assert.match(texts(tree).join(' '), /Peak hours/);
   assert.match(tree.props.title, /Changes to Off-peak in/);
   assert.equal(tree.props['aria-label'], 'DeepSeek billing: Peak hours. Estimated session spend $0.063.');
 });
 
 test('shows zero spend and the live window before the first model call', () => {
-  const tree = render(registration.component, undefined, '2026-10-23T19:51:00Z');
+  const tree = render(freshComponent(), undefined, '2026-10-23T19:51:00Z');
   const copy = texts(tree).join(' ');
   assert.match(copy, /Off-peak/);
   assert.match(copy, /\$0\.00/);
   assert.match(tree.props.title, /DeepSeek billing window: Off-peak/);
+});
+
+test('folds recharge and bonus wallets into one balance per currency', () => {
+  const { summarizeBalance, formatMoney } = loaded.factory(requireStub).test;
+  const summary = summarizeBalance({
+    status: 'ready',
+    value: [{ currency: 'CNY', balance: '6.98' }],
+    bonusWallets: [{ currency: 'CNY', balance: '0.28' }],
+  });
+  assert.equal(summary.primary.currency, 'CNY');
+  assert.equal(summary.primary.total, 7.26);
+  assert.equal(summary.primary.recharge, 6.98);
+  assert.equal(summary.primary.bonus, 0.28);
+  assert.equal(formatMoney('CNY', summary.primary.total), '¥7.26');
+  assert.equal(formatMoney('USD', 3.5), '$3.50');
+});
+
+test('reports no balance for a failed, absent or signed-out read', () => {
+  const { summarizeBalance } = loaded.factory(requireStub).test;
+  assert.equal(summarizeBalance(null), null);
+  assert.equal(summarizeBalance({ status: 'failed' }), null);
+  assert.equal(summarizeBalance({ status: 'ready', value: [], bonusWallets: [] }), null);
+  assert.equal(summarizeBalance({ status: 'ready', value: [{ currency: 'USD', balance: 'oops' }] }), null);
+});
+
+test('renders the account balance beside the session cost', async () => {
+  const withAccount = makeContext({
+    getBalance: async () => ({
+      ok: true,
+      value: {
+        status: 'ready',
+        value: [{ currency: 'CNY', balance: '6.98' }],
+        bonusWallets: [{ currency: 'CNY', balance: '0.28' }],
+      },
+    }),
+  });
+  loaded.factory(requireStub).apply(withAccount.ctx);
+  render(withAccount.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const tree = await settle(withAccount.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const copy = texts(tree).join(' ');
+  assert.match(copy, /≈ \$0\.063/);
+  assert.match(copy, /bal ¥7\.26/);
+  assert.match(tree.props.title, /Account balance: ¥7\.26/);
+  assert.match(tree.props.title, /Recharge ¥6\.98 · bonus ¥0\.28/);
+  assert.equal(
+    tree.props['aria-label'],
+    'DeepSeek billing: Off-peak. Estimated session spend $0.063. Account balance ¥7.26.',
+  );
+});
+
+test('omits the balance when the account transport is missing or unauthorized', async () => {
+  const signedOut = makeContext({
+    getBalance: async () => ({ ok: true, value: null }),
+  });
+  loaded.factory(requireStub).apply(signedOut.ctx);
+  render(signedOut.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const tree = await settle(signedOut.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  assert.doesNotMatch(texts(tree).join(' '), /bal/);
+  assert.doesNotMatch(tree.props.title, /Account balance/);
+  assert.equal(tree.props['aria-label'], 'DeepSeek billing: Off-peak. Estimated session spend $0.063.');
+
+  const failing = makeContext({
+    getBalance: async () => ({ ok: false, error: { code: 'account/unauthorized' } }),
+  });
+  loaded.factory(requireStub).apply(failing.ctx);
+  render(failing.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const failed = await settle(failing.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  assert.doesNotMatch(texts(failed).join(' '), /bal/);
 });

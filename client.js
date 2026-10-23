@@ -27,13 +27,18 @@ window.__ModuleLoader__.load({
         'status.peak': 'Peak hours',
         'status.offPeak': 'Off-peak',
         'aria': 'DeepSeek billing: {status}. Estimated session spend {amount}.',
+        'aria.withBalance': 'DeepSeek billing: {status}. Estimated session spend {amount}. Account balance {balance}.',
+        'balance.short': 'bal',
+        'tip.balanceTotal': 'Account balance: {balance}',
+        'tip.balanceParts': 'Recharge {recharge} · bonus {bonus}',
+        'tip.balanceStale': 'Read from your DeepSeek account when this line last refreshed',
         'tip.window': 'DeepSeek billing window: {status}',
         'tip.next': 'Changes to {status} in {gap}',
         'tip.spend': 'Estimated this session: {amount} over {calls} model calls',
         'tip.tokens': 'Input {input} ({percent}% cache hit) · output {output}',
         'tip.split': 'Billed: input {miss} + cache {hit} + output {out}',
         'tip.uncached': 'The same prompt without prompt caching would cost {amount} at list price',
-        'tip.balance': 'This is a list-price equivalent, not a wallet reading: DeepSeek consumes granted or bonus credit before a topped-up balance, so a topped-up balance can stay flat while this number grows.',
+        'tip.caveat': 'This is a list-price equivalent, not a wallet reading: DeepSeek consumes granted or bonus credit before a topped-up balance, so a topped-up balance can stay flat while this number grows.',
         'tip.mixed': '{peak} calls at peak, {off} at off-peak',
         'tip.unpriced': '{count} call(s) billed on an unknown route were excluded',
         'tip.estimate': 'Estimate from list prices; cached-prefix and discount timing follow the session log.',
@@ -45,13 +50,18 @@ window.__ModuleLoader__.load({
         'status.peak': '高峰时段',
         'status.offPeak': '非高峰时段',
         'aria': 'DeepSeek 计费：{status}。本会话预估花费 {amount}。',
+        'aria.withBalance': 'DeepSeek 计费：{status}。本会话预估花费 {amount}。账户余额 {balance}。',
+        'balance.short': '余额',
+        'tip.balanceTotal': '账户余额：{balance}',
+        'tip.balanceParts': '充值 {recharge} · 赠送 {bonus}',
+        'tip.balanceStale': '刷新时从你的 DeepSeek 账户读取',
         'tip.window': 'DeepSeek 计费时段：{status}',
         'tip.next': '{gap}后转入{status}',
         'tip.spend': '本会话预估：{amount}，共 {calls} 次模型调用',
         'tip.tokens': '输入 {input}（缓存命中 {percent}%）· 输出 {output}',
         'tip.split': '计费：输入 {miss} + 缓存 {hit} + 输出 {out}',
         'tip.uncached': '同样的提示若不使用缓存，按标价约为 {amount}',
-        'tip.balance': '这只是按标价折算的等效金额，不是钱包读数：DeepSeek 会先扣减赠送或奖励额度，因此充值的余额可能保持不变。',
+        'tip.caveat': '这只是按标价折算的等效金额，不是钱包读数：DeepSeek 会先扣减赠送或奖励额度，因此充值的余额可能保持不变。',
         'tip.mixed': '高峰 {peak} 次，非高峰 {off} 次',
         'tip.unpriced': '{count} 次未知路由调用未计价',
         'tip.estimate': '按官方标价估算；缓存前缀与折扣时段以会话日志为准。',
@@ -154,6 +164,91 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Money label for one wallet currency.
+     * @param {'CNY' | 'USD'} currency - wallet currency.
+     * @param {number} amount - wallet amount.
+     * @returns {string} the label.
+     */
+    function formatMoney(currency, amount) {
+      const symbol = currency === 'CNY' ? '¥' : '$';
+      const digits = new Intl.NumberFormat(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }).format(amount);
+      return `${symbol}${digits}`;
+    }
+
+    /**
+     * Fold the account balance response into displayable totals.
+     *
+     * The platform reports recharge and bonus wallets separately; DeepSeek spends
+     * bonus credit first, so the number a person watches is the sum of both.
+     * @param {object | null | undefined} value - `AccountDetails['balance']`.
+     * @returns {{primary: {currency: string, total: number, recharge: number, bonus: number}, all: object[]} | null} totals, or null when unavailable.
+     */
+    function summarizeBalance(value) {
+      if (value === null || value === undefined || value.status !== 'ready') return null;
+      const totals = new Map();
+      const add = (list, kind) => {
+        for (const wallet of list ?? []) {
+          const amount = Number.parseFloat(wallet.balance);
+          if (!Number.isFinite(amount)) continue;
+          const entry = totals.get(wallet.currency) ?? { currency: wallet.currency, total: 0, recharge: 0, bonus: 0 };
+          entry[kind] += amount;
+          entry.total += amount;
+          totals.set(wallet.currency, entry);
+        }
+      };
+      add(value.value, 'recharge');
+      add(value.bonusWallets, 'bonus');
+      const all = [...totals.values()].map((entry) => ({
+        ...entry,
+        total: roundMoney(entry.total),
+        recharge: roundMoney(entry.recharge),
+        bonus: roundMoney(entry.bonus),
+      })).sort((left, right) => right.total - left.total);
+      return all.length === 0 ? null : { primary: all[0], all };
+    }
+
+    /**
+     * Strip binary floating-point noise from a wallet sum.
+     * @param {number} value - summed amount.
+     * @returns {number} the amount rounded to six decimals.
+     */
+    function roundMoney(value) {
+      return Math.round(value * 1e6) / 1e6;
+    }
+
+    /**
+     * The metadata every account Remote method carries. The version is the
+     * running Harness release, read from the boot payload rather than guessed.
+     * @param {object} ctx - client context carrying the locale service.
+     * @returns {{version: string, locale: string, timezoneOffsetSeconds: number}} metadata.
+     */
+    function clientMetadata(ctx) {
+      let version = 'dsh-peak-cost';
+      try {
+        const boot = globalThis.__DSH_BOOT__;
+        if (boot && boot.release && typeof boot.release.version === 'string' && boot.release.version !== '') {
+          version = boot.release.version;
+        }
+      } catch {
+        // keep the fallback
+      }
+      let locale = 'en';
+      try {
+        locale = ctx.locale.getSnapshot().active;
+      } catch {
+        // keep the fallback
+      }
+      return {
+        version,
+        locale,
+        timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+      };
+    }
+
+    /**
      * Human gap label for the next billing-window change.
      * @param {number} ms - milliseconds remaining.
      * @param {(key: string, params?: object) => string} t - translate.
@@ -185,12 +280,38 @@ window.__ModuleLoader__.load({
     /**
      * Build the dock entry component for one translate function.
      * @param {(key: string, params?: object) => string} t - translate.
+     * @param {object} ctx - client context, for the account transport and per-call metadata.
      * @returns {Function} the React component.
      */
-    function createEntry(t) {
+    function createEntry(t, ctx) {
       return function PeakCostEntry({ useProjection }) {
         const usage = useProjection('peakCost');
         const now = useClock(30000);
+        const [balance, setBalance] = React.useState(null);
+        React.useEffect(() => {
+          let live = true;
+          const read = () => {
+            const account = resolveAccount(ctx);
+            if (account === undefined) return;
+            Promise.resolve()
+              .then(() => account.getBalance(clientMetadata(ctx)))
+              .then((result) => {
+                if (!live) return;
+                setBalance(result !== null && result !== undefined && result.ok === true
+                  ? summarizeBalance(result.value)
+                  : null);
+              })
+              .catch(() => {
+                if (live) setBalance(null);
+              });
+          };
+          read();
+          const id = window.setInterval(read, 60000);
+          return () => {
+            live = false;
+            window.clearInterval(id);
+          };
+        }, []);
         const windows = usage !== undefined && usage !== null && Array.isArray(usage.peakWindows)
           ? usage.peakWindows
           : DEFAULT_WINDOWS;
@@ -238,12 +359,27 @@ window.__ModuleLoader__.load({
             lines.push(t('tip.unpriced', { count: usage.unpricedMessages }));
           }
           lines.push(t('tip.estimate'));
-          lines.push(t('tip.balance'));
+          lines.push(t('tip.caveat'));
+        }
+        const money = balance === null
+          ? undefined
+          : formatMoney(balance.primary.currency, balance.primary.total);
+        if (money !== undefined) {
+          lines.push(t('tip.balanceTotal', { balance: money }));
+          if (balance.primary.bonus > 0) {
+            lines.push(t('tip.balanceParts', {
+              recharge: formatMoney(balance.primary.currency, balance.primary.recharge),
+              bonus: formatMoney(balance.primary.currency, balance.primary.bonus),
+            }));
+          }
+          lines.push(t('tip.balanceStale'));
         }
         return h('span', {
           'data-testid': 'peak-cost',
           title: lines.join('\n'),
-          'aria-label': t('aria', { status, amount }),
+          'aria-label': money === undefined
+            ? t('aria', { status, amount })
+            : t('aria.withBalance', { status, amount, balance: money }),
           style: {
             display: 'inline-flex',
             alignItems: 'center',
@@ -279,8 +415,43 @@ window.__ModuleLoader__.load({
               fontVariantNumeric: 'tabular-nums',
             },
           }, `≈ ${amount}`),
+          ...money === undefined ? [] : [
+            h('span', { key: 'bal-sep', 'aria-hidden': true, style: { opacity: 0.6 } }, '·'),
+            h('span', {
+              key: 'bal',
+              'aria-hidden': true,
+              style: { display: 'inline-flex', alignItems: 'center', gap: '3px' },
+            }, [
+              h('span', { key: 'label', style: { opacity: 0.8 } }, t('balance.short')),
+              h('span', {
+                key: 'value',
+                style: { color: 'var(--dsw-alias-label-primary)', fontVariantNumeric: 'tabular-nums' },
+              }, money),
+            ]),
+          ],
         ]);
       };
+    }
+
+    /**
+     * Resolve the account transport without making it a hard dependency: a
+     * profile without the account Remote still gets the cost line.
+     * @param {object} ctx - client context.
+     * @returns {object | undefined} the `remote.account` face when present.
+     */
+    function resolveAccount(ctx) {
+      try {
+        let remote;
+        if (typeof ctx.get === 'function') remote = ctx.get('remote');
+        if (remote === undefined || remote === null) remote = ctx.remote;
+        if (remote === undefined || remote === null) return undefined;
+        const account = remote.account;
+        return account !== null && account !== undefined && typeof account.getBalance === 'function'
+          ? account
+          : undefined;
+      } catch {
+        return undefined;
+      }
     }
 
     return {
@@ -295,8 +466,10 @@ window.__ModuleLoader__.load({
           name: 'conversation.composer.dock',
           id: 'peak-cost',
           order: 2,
-        }, createEntry(t)));
+        }, createEntry(t, ctx)));
       },
+      /** Pure helpers exposed for the unit suite; the loader ignores them. */
+      test: { summarizeBalance, formatMoney, clientMetadata },
     };
   },
 });
