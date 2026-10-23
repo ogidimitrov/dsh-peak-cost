@@ -49,6 +49,32 @@ Each `assistant/message` in the log is priced on its own:
 
 Because the fold is a pure function of committed events, replay and fork produce the same figure.
 
+### Cache hits are part of the calculation
+
+Harness sends the whole conversation on every model call, so a long session burns a large prompt each time — and nearly all of it is a **cache hit**, billed at the hit rate rather than the input rate. That discount is the whole reason one session can move millions of prompt tokens for cents.
+
+A real session from this plugin, mid-conversation, off-peak on `deepseek-flash`:
+
+| | tokens | rate (off-peak) | cost |
+|---|---|---|---|
+| cache-miss input | 184,312 | $0.15 / 1M | $0.028 |
+| cache-hit input | 21,805,952 | $0.003 / 1M | $0.065 |
+| output | 102,878 | $0.60 / 1M | $0.062 |
+| **total** | | | **$0.155** |
+
+The same 22M prompt tokens billed without prompt caching would be **$3.36** at the miss rate. The tooltip shows this line for the session you are looking at, so the discount is visible rather than assumed.
+
+### Why this number and your balance can disagree
+
+The figure is a **list-price equivalent**, computed from the session log; it never reads your wallet. Three things make a wallet diverge from it:
+
+- **Granted or bonus credit is consumed first.** DeepSeek deducts from granted/bonus balances before a topped-up balance, so a topped-up number can stay flat while usage accrues.
+- **The balance is not streamed.** It is read on demand from the platform; a panel left open shows what it read.
+- **Not every call is in the log.** Session-title generation and some compaction work never commit an `assistant/message`, so they cost money this estimate cannot see.
+
+Use the platform's usage page for the authoritative charge; this line is for watching a session's shape while it runs.
+
+
 ### Rates and calendar
 
 Defaults follow [DeepSeek's published pricing](https://api-docs.deepseek.com/quick_start/pricing/) (USD per 1M tokens):

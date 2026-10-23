@@ -161,10 +161,14 @@ const STATE_SCHEMA = plainJsonSchema('peakCost state');
  */
 const peakCostProjectionDefinition = {
   key: 'peakCost',
-  stateVersion: 1,
+  stateVersion: 2,
   stateSchema: STATE_SCHEMA,
   init: () => ({
     costUsd: 0,
+    missCostUsd: 0,
+    hitCostUsd: 0,
+    outCostUsd: 0,
+    uncachedCostUsd: 0,
     messages: 0,
     inputTokens: 0,
     hitTokens: 0,
@@ -189,11 +193,20 @@ const peakCostProjectionDefinition = {
     const writeTokens = tokens(usage.cacheWriteTokens);
     const outputTokens = tokens(usage.outputTokens);
     const factor = peak ? 1 : OFF_PEAK_FACTOR;
-    const costUsd = rate === undefined
+    const missCostUsd = rate === undefined ? 0 : ((inputTokens + writeTokens) * rate.miss) / 1e6 * factor;
+    const hitCostUsd = rate === undefined ? 0 : (hitTokens * rate.hit) / 1e6 * factor;
+    const outCostUsd = rate === undefined ? 0 : (outputTokens * rate.out) / 1e6 * factor;
+    // The same prompt billed without prompt caching: every input token at the
+    // cache-miss rate. Shown so the cache discount is visible, not assumed.
+    const uncachedCostUsd = rate === undefined
       ? 0
-      : (((inputTokens + writeTokens) * rate.miss) + (hitTokens * rate.hit) + (outputTokens * rate.out)) / 1e6 * factor;
+      : ((inputTokens + writeTokens + hitTokens) * rate.miss) / 1e6 * factor;
     return {
-      costUsd: state.costUsd + costUsd,
+      costUsd: state.costUsd + missCostUsd + hitCostUsd + outCostUsd,
+      missCostUsd: state.missCostUsd + missCostUsd,
+      hitCostUsd: state.hitCostUsd + hitCostUsd,
+      outCostUsd: state.outCostUsd + outCostUsd,
+      uncachedCostUsd: state.uncachedCostUsd + uncachedCostUsd,
       messages: state.messages + 1,
       inputTokens: state.inputTokens + inputTokens,
       hitTokens: state.hitTokens + hitTokens,
@@ -209,6 +222,10 @@ const peakCostProjectionDefinition = {
     viewSchema: WIRE_SCHEMA,
     view: (state) => ({
       costUsd: state.costUsd,
+      missCostUsd: state.missCostUsd,
+      hitCostUsd: state.hitCostUsd,
+      outCostUsd: state.outCostUsd,
+      uncachedCostUsd: state.uncachedCostUsd,
       messages: state.messages,
       inputTokens: state.inputTokens,
       hitTokens: state.hitTokens,

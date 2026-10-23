@@ -70,6 +70,10 @@ function render(component, value, nowIso) {
 
 const liveValue = {
   costUsd: 0.06312069000000001,
+  missCostUsd: 0.01736145,
+  hitCostUsd: 0.01768704,
+  outCostUsd: 0.0280722,
+  uncachedCostUsd: 0.90171345,
   messages: 62,
   inputTokens: 115743,
   hitTokens: 5895680,
@@ -132,22 +136,25 @@ test('registers one dock entry and both locale dictionaries', () => {
   assert.equal(registration.options.order, 2);
 });
 
-test('renders an off-peak pill with the session amount', () => {
+test('renders an approximate off-peak pill with the session amount', () => {
   const tree = render(registration.component, liveValue, '2026-10-23T19:51:00Z');
   const copy = texts(tree).join(' ');
   assert.match(copy, /Off-peak/);
-  assert.match(copy, /\$0\.063/);
+  assert.match(copy, /≈ \$0\.063/);
   assert.doesNotMatch(copy, /Peak hours/);
   assert.equal(tree.props['aria-label'], 'DeepSeek billing: Off-peak. Estimated session spend $0.063.');
 });
 
-test('tooltip explains window, next change, spend and token split', () => {
+test('tooltip explains window, next change, spend and the cache discount', () => {
   const tree = render(registration.component, liveValue, '2026-10-23T19:51:00Z');
   const title = tree.props.title;
   assert.match(title, /DeepSeek billing window: Off-peak/);
   assert.match(title, /Changes to Peak hours in 2 d 5 h/);
   assert.match(title, /Estimated this session: \$0\.063 over 62 model calls/);
-  assert.match(title, /Input 116k \(cache hit 5\.9M\) · output 46\.8k/);
+  assert.match(title, /Input 116k \(98\.1% cache hit\) · output 46\.8k/);
+  assert.match(title, /Billed: input \$0\.017 \+ cache \$0\.018 \+ output \$0\.028/);
+  assert.match(title, /without prompt caching would cost \$0\.902 at list price/);
+  assert.match(title, /list-price equivalent, not a wallet reading/);
   assert.match(title, /Estimate from list prices/);
 });
 

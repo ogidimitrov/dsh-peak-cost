@@ -71,9 +71,24 @@ test('prices cache-hit input, cache-miss input and output separately', () => {
     outputTokens: 1_000_000,
   }));
   assert.equal(state.costUsd, 0.15 + 0.003 + 0.6);
+  assert.equal(state.missCostUsd, 0.15);
+  assert.equal(state.hitCostUsd, 0.003);
+  assert.equal(state.outCostUsd, 0.6);
+  assert.equal(state.uncachedCostUsd, 0.3);
   assert.equal(state.inputTokens, 1_000_000);
   assert.equal(state.hitTokens, 1_000_000);
   assert.equal(state.outputTokens, 1_000_000);
+});
+
+test('reports what the same prompt would cost without prompt caching', () => {
+  const cached = definition.apply(state0, message('2026-10-23T12:00:00Z', 'deepseek-flash', {
+    inputTokens: 1_000,
+    cacheReadTokens: 9_999_000,
+    outputTokens: 0,
+  }));
+  assert.equal(cached.costUsd, (1_000 * 0.15 + 9_999_000 * 0.003) / 1e6);
+  assert.equal(cached.uncachedCostUsd, (10_000_000 * 0.15) / 1e6);
+  assert.ok(cached.costUsd < cached.uncachedCostUsd / 10);
 });
 
 test('uses the pro rate card for pro routes and flash for legacy aliases', () => {

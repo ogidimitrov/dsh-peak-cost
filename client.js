@@ -30,7 +30,10 @@ window.__ModuleLoader__.load({
         'tip.window': 'DeepSeek billing window: {status}',
         'tip.next': 'Changes to {status} in {gap}',
         'tip.spend': 'Estimated this session: {amount} over {calls} model calls',
-        'tip.tokens': 'Input {input} (cache hit {hit}) · output {output}',
+        'tip.tokens': 'Input {input} ({percent}% cache hit) · output {output}',
+        'tip.split': 'Billed: input {miss} + cache {hit} + output {out}',
+        'tip.uncached': 'The same prompt without prompt caching would cost {amount} at list price',
+        'tip.balance': 'This is a list-price equivalent, not a wallet reading: DeepSeek consumes granted or bonus credit before a topped-up balance, so a topped-up balance can stay flat while this number grows.',
         'tip.mixed': '{peak} calls at peak, {off} at off-peak',
         'tip.unpriced': '{count} call(s) billed on an unknown route were excluded',
         'tip.estimate': 'Estimate from list prices; cached-prefix and discount timing follow the session log.',
@@ -45,7 +48,10 @@ window.__ModuleLoader__.load({
         'tip.window': 'DeepSeek 计费时段：{status}',
         'tip.next': '{gap}后转入{status}',
         'tip.spend': '本会话预估：{amount}，共 {calls} 次模型调用',
-        'tip.tokens': '输入 {input}（缓存命中 {hit}）· 输出 {output}',
+        'tip.tokens': '输入 {input}（缓存命中 {percent}%）· 输出 {output}',
+        'tip.split': '计费：输入 {miss} + 缓存 {hit} + 输出 {out}',
+        'tip.uncached': '同样的提示若不使用缓存，按标价约为 {amount}',
+        'tip.balance': '这只是按标价折算的等效金额，不是钱包读数：DeepSeek 会先扣减赠送或奖励额度，因此充值的余额可能保持不变。',
         'tip.mixed': '高峰 {peak} 次，非高峰 {off} 次',
         'tip.unpriced': '{count} 次未知路由调用未计价',
         'tip.estimate': '按官方标价估算；缓存前缀与折扣时段以会话日志为准。',
@@ -207,12 +213,24 @@ window.__ModuleLoader__.load({
           }));
         }
         if (usage !== undefined && usage !== null && (usage.messages ?? 0) > 0) {
+          const promptTokens = (usage.inputTokens ?? 0) + (usage.hitTokens ?? 0);
+          const percent = promptTokens > 0
+            ? Math.round(((usage.hitTokens ?? 0) / promptTokens) * 1000) / 10
+            : 0;
           lines.push(t('tip.spend', { amount, calls: usage.messages }));
           lines.push(t('tip.tokens', {
             input: formatTokens(usage.inputTokens),
-            hit: formatTokens(usage.hitTokens),
+            percent,
             output: formatTokens(usage.outputTokens),
           }));
+          lines.push(t('tip.split', {
+            miss: formatUsd(usage.missCostUsd ?? 0),
+            hit: formatUsd(usage.hitCostUsd ?? 0),
+            out: formatUsd(usage.outCostUsd ?? 0),
+          }));
+          if ((usage.uncachedCostUsd ?? 0) > 0) {
+            lines.push(t('tip.uncached', { amount: formatUsd(usage.uncachedCostUsd) }));
+          }
           if ((usage.peakMessages ?? 0) > 0 && (usage.offPeakMessages ?? 0) > 0) {
             lines.push(t('tip.mixed', { peak: usage.peakMessages, off: usage.offPeakMessages }));
           }
@@ -220,6 +238,7 @@ window.__ModuleLoader__.load({
             lines.push(t('tip.unpriced', { count: usage.unpricedMessages }));
           }
           lines.push(t('tip.estimate'));
+          lines.push(t('tip.balance'));
         }
         return h('span', {
           'data-testid': 'peak-cost',
@@ -259,7 +278,7 @@ window.__ModuleLoader__.load({
               color: 'var(--dsw-alias-label-primary)',
               fontVariantNumeric: 'tabular-nums',
             },
-          }, amount),
+          }, `≈ ${amount}`),
         ]);
       };
     }
