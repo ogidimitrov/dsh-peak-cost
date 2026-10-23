@@ -3,15 +3,20 @@
 A [DeepSeek Harness](https://deepseek-harness.github.io/deepseek-harness/en/guide/quickstart) plugin that adds one ambient line under the composer:
 
 ```text
-● Off-peak · $0.063
+● Off-peak · ≈ $0.338 · bal $7.27
 ```
 
-It answers two questions about the session you are in:
+![The composer dock line in DeepSeek Harness: peak status, session estimate and account balance, to the right of the shipped step counter and token meter](assets/composer-dock.png)
+
+It answers three questions about the session you are in:
 
 1. **Is DeepSeek billing in peak hours right now?**
 2. **How much has this session cost so far, in US dollars?**
+3. **What is left in your DeepSeek account?**
 
-Hovering the line expands it into a breakdown: the billing window and the time until it flips, the estimated spend and model-call count, the input/cache/output token split, and how many calls ran at each rate.
+Hovering the line expands it into a breakdown: the billing window and the time until it flips, the estimated spend and model-call count, the input/cache/output token split, the cost of each token kind, what the same prompt would cost without caching, and both wallets behind the balance.
+
+The screenshot above is unedited: the line sits beside the shipped turn/step counter and token meter, and reads `● Off-peak · ≈ $0.338 · bal $7.27` for a session at 9 turns and 264 steps with a 99.6% cache hit rate.
 
 <p align="center">
   <img src="icon.svg" width="72" height="72" alt="dsh-peak-cost icon">
