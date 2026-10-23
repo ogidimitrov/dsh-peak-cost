@@ -38,7 +38,8 @@
     "screenshots.json"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "check": "node scripts/check-manifest.mjs"
   },
   "engines": {
     "node": ">=22"
