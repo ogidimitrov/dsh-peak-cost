@@ -31,7 +31,6 @@ window.__ModuleLoader__.load({
         'balance.short': 'bal',
         'tip.balanceTotal': 'Account balance: {balance}',
         'tip.balanceParts': 'Recharge {recharge} · bonus {bonus}',
-        'tip.balanceStale': 'Read from your DeepSeek account when this line last refreshed',
         'tip.window': 'DeepSeek billing window: {status}',
         'tip.next': 'Changes to {status} in {gap}',
         'tip.spend': 'Estimated this session: {amount} over {calls} model calls',
@@ -54,7 +53,6 @@ window.__ModuleLoader__.load({
         'balance.short': '余额',
         'tip.balanceTotal': '账户余额：{balance}',
         'tip.balanceParts': '充值 {recharge} · 赠送 {bonus}',
-        'tip.balanceStale': '刷新时从你的 DeepSeek 账户读取',
         'tip.window': 'DeepSeek 计费时段：{status}',
         'tip.next': '{gap}后转入{status}',
         'tip.spend': '本会话预估：{amount}，共 {calls} 次模型调用',
@@ -281,35 +279,56 @@ window.__ModuleLoader__.load({
      * Build the dock entry component for one translate function.
      * @param {(key: string, params?: object) => string} t - translate.
      * @param {object} ctx - client context, for the account transport and per-call metadata.
+     * @param {() => object | undefined} getAccount - the injected account face, when available.
      * @returns {Function} the React component.
      */
-    function createEntry(t, ctx) {
+    function createEntry(t, ctx, getAccount) {
       return function PeakCostEntry({ useProjection }) {
         const usage = useProjection('peakCost');
         const now = useClock(30000);
         const [balance, setBalance] = React.useState(null);
         React.useEffect(() => {
           let live = true;
+          let warned = false;
+          const fail = (reason) => {
+            if (!warned) {
+              warned = true;
+              try {
+                console.warn('peak-cost: account balance unavailable', reason);
+              } catch {
+                // no console in this host
+              }
+            }
+            setBalance(null);
+          };
           const read = () => {
-            const account = resolveAccount(ctx);
-            if (account === undefined) return;
+            const account = getAccount?.() ?? resolveAccount(ctx);
+            if (account === undefined) {
+              fail('no account transport');
+              return;
+            }
             Promise.resolve()
               .then(() => account.getBalance(clientMetadata(ctx)))
               .then((result) => {
                 if (!live) return;
-                setBalance(result !== null && result !== undefined && result.ok === true
-                  ? summarizeBalance(result.value)
-                  : null);
+                if (result === null || result === undefined || result.ok !== true) {
+                  fail(result?.error?.code ?? 'read failed');
+                  return;
+                }
+                setBalance(summarizeBalance(result.value));
               })
-              .catch(() => {
-                if (live) setBalance(null);
+              .catch((error) => {
+                if (live) fail(error?.message ?? 'read threw');
               });
           };
           read();
           const id = window.setInterval(read, 60000);
+          const onFocus = () => read();
+          window.addEventListener('focus', onFocus);
           return () => {
             live = false;
             window.clearInterval(id);
+            window.removeEventListener('focus', onFocus);
           };
         }, []);
         const windows = usage !== undefined && usage !== null && Array.isArray(usage.peakWindows)
@@ -366,13 +385,10 @@ window.__ModuleLoader__.load({
           : formatMoney(balance.primary.currency, balance.primary.total);
         if (money !== undefined) {
           lines.push(t('tip.balanceTotal', { balance: money }));
-          if (balance.primary.bonus > 0) {
-            lines.push(t('tip.balanceParts', {
-              recharge: formatMoney(balance.primary.currency, balance.primary.recharge),
-              bonus: formatMoney(balance.primary.currency, balance.primary.bonus),
-            }));
-          }
-          lines.push(t('tip.balanceStale'));
+          lines.push(t('tip.balanceParts', {
+            recharge: formatMoney(balance.primary.currency, balance.primary.recharge),
+            bonus: formatMoney(balance.primary.currency, balance.primary.bonus),
+          }));
         }
         return h('span', {
           'data-testid': 'peak-cost',
@@ -462,11 +478,35 @@ window.__ModuleLoader__.load({
           'peak-cost: locale dictionary',
         );
         const t = translate(ctx.locale.bind(NS), LOCALES.en);
+        // The account face is a Typert Remote namespace, not a plain service:
+        // capture it through a scoped injection so the entry still renders on
+        // profiles that have no account transport at all.
+        let account;
+        const capture = (scoped) => {
+          try {
+            const face = scoped['remote.account'] ?? scoped.remote?.account;
+            if (face !== null && face !== undefined && typeof face.getBalance === 'function') account = face;
+          } catch {
+            // leave the fallback path to try the root context
+          }
+        };
+        if (typeof ctx.inject === 'function') {
+          try {
+            ctx.inject(['remote.account'], (scoped) => {
+              capture(scoped);
+              return () => {
+                account = undefined;
+              };
+            });
+          } catch {
+            // optional dependency
+          }
+        }
         ctx.slots.inject('conversation.composer.dock', () => ctx.slots.register({
           name: 'conversation.composer.dock',
           id: 'peak-cost',
           order: 2,
-        }, createEntry(t, ctx)));
+        }, createEntry(t, ctx, () => account)));
       },
       /** Pure helpers exposed for the unit suite; the loader ignores them. */
       test: { summarizeBalance, formatMoney, clientMetadata },

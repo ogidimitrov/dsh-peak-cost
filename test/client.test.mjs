@@ -48,6 +48,8 @@ globalThis.window = {
   },
   setInterval: () => 0,
   clearInterval: () => {},
+  addEventListener: () => {},
+  removeEventListener: () => {},
 };
 
 await import('../client.js');
@@ -111,9 +113,10 @@ const dictionaries = [];
 /**
  * Build a client context with an optional account transport.
  * @param {object} [account] - `ctx.remote.account` stub.
+ * @param {object} [options] - `injectAccount` simulates the scoped injection path.
  * @returns {{ctx: object, registration: object, dicts: object[]}} context, registration, dictionaries.
  */
-function makeContext(account) {
+function makeContext(account, options = {}) {
   const registration = {};
   const dicts = [];
   const ctx = {
@@ -134,14 +137,21 @@ function makeContext(account) {
         registration.owner = owner;
         return callback();
       },
-      register(options, component) {
-        registration.options = options;
+      register(optionsValue, component) {
+        registration.options = optionsValue;
         registration.component = component;
         return () => {};
       },
     },
   };
   if (account !== undefined) ctx.remote = { account };
+  if (options.injectAccount !== undefined) {
+    const face = options.injectAccount;
+    ctx.inject = (deps, callback) => {
+      registration.injected = deps;
+      return callback({ 'remote.account': face, remote: { account: face } });
+    };
+  }
   return { ctx, registration, dicts };
 }
 
@@ -284,4 +294,44 @@ test('omits the balance when the account transport is missing or unauthorized', 
   render(failing.registration.component, liveValue, '2026-10-23T19:51:00Z');
   const failed = await settle(failing.registration.component, liveValue, '2026-10-23T19:51:00Z');
   assert.doesNotMatch(texts(failed).join(' '), /bal/);
+});
+
+test('finds the account through scoped injection when the root context has no remote', async () => {
+  const injected = {
+    getBalance: async () => ({
+      ok: true,
+      value: {
+        status: 'ready',
+        value: [{ currency: 'USD', balance: '7.26' }],
+        bonusWallets: [],
+      },
+    }),
+  };
+  const made = makeContext(undefined, { injectAccount: injected });
+  loaded.factory(requireStub).apply(made.ctx);
+  assert.deepEqual(made.registration.injected, ['remote.account']);
+  render(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const tree = await settle(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const copy = texts(tree).join(' ');
+  assert.match(copy, /bal \$7\.26/);
+  assert.match(tree.props.title, /Account balance: \$7\.26/);
+  assert.match(tree.props.title, /Recharge \$7\.26 · bonus \$0\.00/);
+});
+
+test('shows both wallets even when the bonus is empty', async () => {
+  const made = makeContext({
+    getBalance: async () => ({
+      ok: true,
+      value: {
+        status: 'ready',
+        value: [{ currency: 'CNY', balance: '12.40' }],
+        bonusWallets: [{ currency: 'CNY', balance: '0.00' }],
+      },
+    }),
+  });
+  loaded.factory(requireStub).apply(made.ctx);
+  render(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const tree = await settle(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  assert.match(tree.props.title, /Account balance: ¥12\.40/);
+  assert.match(tree.props.title, /Recharge ¥12\.40 · bonus ¥0\.00/);
 });

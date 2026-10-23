@@ -34,11 +34,16 @@ Next to the session estimate the line also shows your DeepSeek account balance:
 ● Off-peak · ≈ $0.18 · bal ¥7.26
 ```
 
-It is read from the Host's account Remote (`ctx.remote.account.getBalance`) every 60 seconds — the same call the Settings → Account page makes — and **both wallet kinds are summed**: the recharge wallet plus any bonus/grant wallet, which is why it can differ from a single number on a top-up page. The tooltip breaks the two apart when a bonus wallet exists.
+It is read from the Host's account Remote (`ctx.remote.account.getBalance`) every 60 seconds and whenever the window regains focus — the same call the Settings → Account page makes — and **both wallet kinds are summed**: the recharge wallet plus any bonus/grant wallet, which is why it can differ from a single number on a top-up page. The tooltip always lists both:
+
+```text
+Account balance: ¥7.26
+Recharge ¥7.26 · bonus ¥0.00
+```
+
+The account face is a Typert Remote namespace rather than a plain service, so the plugin captures it through a scoped `ctx.inject(['remote.account'], …)` and still falls back to `ctx.remote.account` on the root context. That keeps it independent of load order: the cost line renders immediately, and the balance appears as soon as the transport is reachable.
 
 The balance is optional in every direction: a signed-out account, an API-key-only setup, a failed read, or a build without the account transport all simply drop it, leaving the cost line intact. Nothing is cached to disk.
-
-### Cost
 
 ## Install
 
