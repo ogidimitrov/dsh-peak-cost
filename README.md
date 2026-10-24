@@ -19,7 +19,7 @@ It answers three questions about the session you are in:
 2. **How much has this session cost so far, in US dollars?**
 3. **What is left in your DeepSeek account?**
 
-Hovering the line expands it into a breakdown: the billing window and the time until it flips, the estimated spend and model-call count, the input/cache/output token split, the cost of each token kind, what the same prompt would cost without caching, and both wallets behind the balance.
+Hovering the line opens a panel with the cost attribution: the billing window and the time until it flips, the account balance and both wallets, and a per-category table showing what each kind of content cost when it first entered the context versus what it costs on every later call that re-sends it.
 
 The screenshot above is unedited: the line sits beside the shipped turn/step counter and token meter, and reads `● Off-peak · ≈ $0.338 · bal $7.27` for a session at 9 turns and 264 steps with a 99.6% cache hit rate.
 
@@ -44,16 +44,44 @@ Next to the session estimate the line also shows your DeepSeek account balance:
 ● Off-peak · ≈ $0.18 · bal ¥7.26
 ```
 
-It is read from the Host's account Remote (`ctx.remote.account.getBalance`) every 60 seconds and whenever the window regains focus — the same call the Settings → Account page makes — and **both wallet kinds are summed**: the recharge wallet plus any bonus/grant wallet, which is why it can differ from a single number on a top-up page. The tooltip always lists both:
-
-```text
-Account balance: ¥7.26
-Recharge ¥7.26 · bonus ¥0.00
-```
+It is read from the Host's account Remote (`ctx.remote.account.getBalance`) every 60 seconds and whenever the window regains focus — the same call the Settings → Account page makes — and **both wallet kinds are summed**: the recharge wallet plus any bonus/grant wallet, which is why it can differ from a single number on a top-up page. The panel always lists both.
 
 The account face is a Typert Remote namespace rather than a plain service, so the plugin captures it through a scoped `ctx.inject(['remote.account'], …)` and still falls back to `ctx.remote.account` on the root context. That keeps it independent of load order: the cost line renders immediately, and the balance appears as soon as the transport is reachable.
 
 The balance is optional in every direction: a signed-out account, an API-key-only setup, a failed read, or a build without the account transport all simply drop it, leaving the cost line intact. Nothing is cached to disk.
+
+## Where the money went
+
+Hovering the line opens a themed panel (fixed-positioned above the composer, closes on leave or Escape) with the attribution:
+
+```text
+Content            In context   First time   Re-sent
+Tool results            40k         $0.021   $0.0047
+Web results             18k         $0.0014  $0.0110
+Assistant replies       12k         $0.0048  $0.00
+Your messages          4.2k         $0.0003  $0.0028
+Model thinking          6k         $0.0024  $0.00
+Tool schemas           8.8k         $0.0013  $0.00
+System prompt          1.4k         $0.0002  $0.00
+Model output                        $0.028
+Session total                                     $0.423
+```
+
+Each row answers two different questions:
+
+- **First time** — what that content cost when it entered the context, billed as cache-miss input, once.
+- **Re-sent** — what it has cost on every later call that carried it, billed as cache-hit input.
+
+So "what did the web search data cost in this session?" is one row: the first fetch at the miss rate plus every re-send at the hit rate. A search result that arrives once and stays in the conversation is billed as input exactly once and as cache for the rest of the session — which is why 18k tokens of web data cost about a cent rather than 18 × the input rate.
+
+### How the split is made
+
+Every call reports real billed usage. The fold keeps a running estimate of the context by category and splits each call's prompt:
+
+- **cache-miss tokens** go to the content added since the previous call, proportional to its size — a new search result, a new tool output, a new reply;
+- **cache-hit tokens** go to everything already in context, proportional to its size.
+
+Per-call totals are the provider's own numbers, so category costs add up to the real bill and only the split between categories is an estimate (four characters per token). Output is listed separately because it is not context. Replaced or compacted content is subtracted as it leaves the context, so the "In context" column tracks the live surface rather than a running sum.
 
 ## Install
 

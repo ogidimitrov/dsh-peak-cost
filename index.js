@@ -3,7 +3,7 @@
  *
  * Folds the durable session log into an estimated USD spend for one Session and
  * publishes it as the client-visible `peakCost` session projection, so the Web
- * client renders a number computed from the whole log instead of re-folding
+ * client renders numbers computed from the whole log instead of re-folding
  * events itself (see the Harness plugin practices: `wire.view`).
  *
  * Prices and the peak/off-peak calendar come from DeepSeek's published list:
@@ -17,6 +17,23 @@
  * Edit `MODEL_RATES` when DeepSeek changes prices; the fold prices each model
  * call at the rate card and billing window that applied when it ran, so a
  * session that crosses a peak boundary stays accurate.
+ *
+ * ## Cost attribution
+ *
+ * The projection also answers "where did the money go". Every model call reports
+ * real billed usage: cache-miss input, cache-hit input, output. The fold keeps a
+ * running, per-category estimate of the context (web results, tool results, user
+ * turns, assistant text, reasoning, system prompt, tool schemas) and splits each
+ * call's billed prompt between those categories:
+ *
+ *   - cache-miss tokens go to the content added since the previous call
+ *     (a search result is billed as input exactly once, when it first lands);
+ *   - cache-hit tokens go to everything already in context, proportional to size
+ *     (the same search result is billed as cache on every later call).
+ *
+ * The shares come from a four-characters-per-token estimate, but the per-call
+ * totals are the provider's own numbers, so the category costs add up to the
+ * real bill and only their split is approximate.
  */
 
 /** Peak list prices in USD per 1M tokens: cache-hit input, cache-miss input, output. */
@@ -39,6 +56,12 @@ const PEAK_WEEKDAYS_ONLY = true;
 
 /** Chinese public holidays (UTC `YYYY-MM-DD`) are fully off-peak. Empty by default. */
 const PEAK_HOLIDAYS = [];
+
+/** Context categories the billed prompt is split across, in display order. */
+const CATEGORIES = ['schemas', 'system', 'user', 'web', 'tools', 'assistant', 'reasoning'];
+
+/** Tool names whose results count as web data. */
+const WEB_TOOLS = new Set(['web_search', 'web_fetch']);
 
 /**
  * Resolve one model id to a rate card, tolerating the aliases DeepSeek keeps
@@ -106,15 +129,121 @@ function tokens(value) {
 }
 
 /**
+ * Fixed heuristic price of one string: four characters per token.
+ * @param {unknown} text - candidate text.
+ * @returns {number} estimated tokens.
+ */
+function estimateText(text) {
+  if (typeof text !== 'string' || text.length === 0) return 0;
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Fixed heuristic price of one content-block list, with per-block overhead.
+ * @param {unknown} blocks - message content blocks.
+ * @returns {number} estimated tokens.
+ */
+function estimateBlocks(blocks) {
+  if (!Array.isArray(blocks)) return 0;
+  let total = 0;
+  for (const block of blocks) {
+    if (block === null || typeof block !== 'object') continue;
+    switch (block.type) {
+      case 'text':
+      case 'reasoning':
+        total += 4 + estimateText(block.text);
+        break;
+      case 'tool-call':
+        total += 10 + estimateText(block.name) + estimateText(block.arguments);
+        break;
+      case 'tool-addition':
+      case 'tool-removal':
+        total += 10 + estimateText(block.toolName);
+        break;
+      case 'image':
+        total += 800;
+        break;
+      case 'file':
+        total += 40;
+        break;
+      default:
+        total += 8;
+    }
+  }
+  return total;
+}
+
+/**
+ * Split one surface event into `[category, tokens]` parts.
+ * @param {object} event - session event.
+ * @param {Record<string, string>} toolNames - callId to tool name.
+ * @returns {Array<[string, number]>} parts, possibly empty.
+ */
+function partsOf(event, toolNames) {
+  const data = event.data;
+  if (data === undefined || data === null) return [];
+  switch (event.type) {
+    case 'user/message':
+      return [['user', estimateBlocks(data.content)]];
+    case 'system/message':
+    case 'developer/message': {
+      const message = data.message ?? data;
+      return [['system', estimateBlocks(message.content)]];
+    }
+    case 'tool/result': {
+      const message = data.message;
+      if (message === undefined || message === null) return [];
+      const callId = message.source?.callId;
+      const name = typeof callId === 'string' ? toolNames[callId] : undefined;
+      return [[WEB_TOOLS.has(name) ? 'web' : 'tools', estimateBlocks(message.content)]];
+    }
+    case 'assistant/message': {
+      const message = data.message;
+      if (message === undefined || message === null) return [];
+      let reasoning = 0;
+      let rest = 0;
+      for (const block of Array.isArray(message.content) ? message.content : []) {
+        if (block !== null && typeof block === 'object' && block.type === 'reasoning') {
+          reasoning += 4 + estimateText(block.text);
+        } else {
+          rest += estimateBlocks([block]);
+        }
+      }
+      const parts = [];
+      if (rest > 0) parts.push(['assistant', rest]);
+      if (reasoning > 0) parts.push(['reasoning', reasoning]);
+      return parts;
+    }
+    default:
+      return [];
+  }
+}
+
+/** A zeroed per-category breakdown. @returns {object} the breakdown. */
+function blankBreakdown() {
+  return Object.fromEntries(CATEGORIES.map((category) => [category, {
+    tokens: 0, miss: 0, hit: 0, usd: 0, missUsd: 0, hitUsd: 0,
+  }]));
+}
+
+/** A zeroed pending-arrivals map. @returns {object} the map. */
+function blankPending() {
+  return Object.fromEntries(CATEGORIES.map((category) => [category, 0]));
+}
+
+/** Deep-copy the breakdown so an update can mutate it. @param {object} source - breakdown. @returns {object} the copy. */
+function copyBreakdown(source) {
+  return Object.fromEntries(CATEGORIES.map((category) => [category, { ...source[category] }]));
+}
+
+/**
  * Reject values that cannot survive the projection checkpoint as plain JSON.
- * The registry stores unit state through a structured clone, so `NaN`, dates,
- * and class instances would corrupt every later read.
  * @param {unknown} value - candidate value.
  * @param {number} depth - recursion guard.
  * @returns {boolean} whether the value is plain JSON.
  */
 function isPlainJson(value, depth = 0) {
-  if (depth > 8) return false;
+  if (depth > 10) return false;
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
   if (typeof value === 'number') return Number.isFinite(value);
   if (Array.isArray(value)) return value.every((item) => isPlainJson(item, depth + 1));
@@ -145,10 +274,10 @@ function plainJsonSchema(label) {
   };
 }
 
-/** Client-visible projection value: cumulative spend plus the calendar the client needs. */
+/** Client-visible projection value. */
 const WIRE_SCHEMA = plainJsonSchema('peakCost view');
 
-/** Persisted fold state: the same totals plus the last priced model id. */
+/** Persisted fold state. */
 const STATE_SCHEMA = plainJsonSchema('peakCost state');
 
 /**
@@ -161,7 +290,7 @@ const STATE_SCHEMA = plainJsonSchema('peakCost state');
  */
 const peakCostProjectionDefinition = {
   key: 'peakCost',
-  stateVersion: 2,
+  stateVersion: 3,
   stateSchema: STATE_SCHEMA,
   init: () => ({
     costUsd: 0,
@@ -178,45 +307,145 @@ const peakCostProjectionDefinition = {
     offPeakMessages: 0,
     unpricedMessages: 0,
     lastModel: '',
+    breakdown: blankBreakdown(),
+    pending: blankPending(),
+    nodes: {},
+    toolNames: {},
+    schemasTokens: 0,
   }),
   apply: (state, event) => {
-    if (event.type !== 'assistant/message') return state;
-    const usage = usageOf(event);
-    if (usage === undefined) return state;
-    const message = event.data.message;
-    const source = message === undefined || message === null ? undefined : message.source;
-    const model = source !== undefined && source !== null && typeof source.model === 'string' ? source.model : '';
-    const rate = rateFor(model);
-    const peak = isPeakAt(event.time);
-    const inputTokens = tokens(usage.inputTokens);
-    const hitTokens = tokens(usage.cacheReadTokens);
-    const writeTokens = tokens(usage.cacheWriteTokens);
-    const outputTokens = tokens(usage.outputTokens);
-    const factor = peak ? 1 : OFF_PEAK_FACTOR;
-    const missCostUsd = rate === undefined ? 0 : ((inputTokens + writeTokens) * rate.miss) / 1e6 * factor;
-    const hitCostUsd = rate === undefined ? 0 : (hitTokens * rate.hit) / 1e6 * factor;
-    const outCostUsd = rate === undefined ? 0 : (outputTokens * rate.out) / 1e6 * factor;
-    // The same prompt billed without prompt caching: every input token at the
-    // cache-miss rate. Shown so the cache discount is visible, not assumed.
-    const uncachedCostUsd = rate === undefined
-      ? 0
-      : ((inputTokens + writeTokens + hitTokens) * rate.miss) / 1e6 * factor;
-    return {
-      costUsd: state.costUsd + missCostUsd + hitCostUsd + outCostUsd,
-      missCostUsd: state.missCostUsd + missCostUsd,
-      hitCostUsd: state.hitCostUsd + hitCostUsd,
-      outCostUsd: state.outCostUsd + outCostUsd,
-      uncachedCostUsd: state.uncachedCostUsd + uncachedCostUsd,
-      messages: state.messages + 1,
-      inputTokens: state.inputTokens + inputTokens,
-      hitTokens: state.hitTokens + hitTokens,
-      writeTokens: state.writeTokens + writeTokens,
-      outputTokens: state.outputTokens + outputTokens,
-      peakMessages: state.peakMessages + (peak ? 1 : 0),
-      offPeakMessages: state.offPeakMessages + (peak ? 0 : 1),
-      unpricedMessages: state.unpricedMessages + (rate === undefined ? 1 : 0),
-      lastModel: model.length > 0 ? model : state.lastModel,
+    const surface = event.surfaceOp !== undefined && event.surfaceOp !== null;
+    const priced = event.type === 'assistant/message' && usageOf(event) !== undefined;
+    if (!surface && !priced && event.type !== 'tool/call' && event.type !== 'request/header') {
+      return state;
+    }
+
+    const next = {
+      ...state,
+      breakdown: copyBreakdown(state.breakdown),
+      pending: { ...state.pending },
+      nodes: surface || priced ? { ...state.nodes } : state.nodes,
+      toolNames: { ...state.toolNames },
     };
+
+    // 1. Price this call against the context as it stood before its own reply.
+    if (priced) {
+      const usage = usageOf(event);
+      const message = event.data.message;
+      const source = message === undefined || message === null ? undefined : message.source;
+      const model = source !== undefined && source !== null && typeof source.model === 'string' ? source.model : '';
+      const rate = rateFor(model);
+      const peak = isPeakAt(event.time);
+      const factor = peak ? 1 : OFF_PEAK_FACTOR;
+      const inputTokens = tokens(usage.inputTokens);
+      const writeTokens = tokens(usage.cacheWriteTokens);
+      const hitTokens = tokens(usage.cacheReadTokens);
+      const outputTokens = tokens(usage.outputTokens);
+      const missTokens = inputTokens + writeTokens;
+
+      const missCostUsd = rate === undefined ? 0 : missTokens * rate.miss / 1e6 * factor;
+      const hitCostUsd = rate === undefined ? 0 : hitTokens * rate.hit / 1e6 * factor;
+      const outCostUsd = rate === undefined ? 0 : outputTokens * rate.out / 1e6 * factor;
+      const uncachedCostUsd = rate === undefined
+        ? 0
+        : (missTokens + hitTokens) * rate.miss / 1e6 * factor;
+
+      next.costUsd = state.costUsd + missCostUsd + hitCostUsd + outCostUsd;
+      next.missCostUsd = state.missCostUsd + missCostUsd;
+      next.hitCostUsd = state.hitCostUsd + hitCostUsd;
+      next.outCostUsd = state.outCostUsd + outCostUsd;
+      next.uncachedCostUsd = state.uncachedCostUsd + uncachedCostUsd;
+      next.messages = state.messages + 1;
+      next.inputTokens = state.inputTokens + inputTokens;
+      next.hitTokens = state.hitTokens + hitTokens;
+      next.writeTokens = state.writeTokens + writeTokens;
+      next.outputTokens = state.outputTokens + outputTokens;
+      next.peakMessages = state.peakMessages + (peak ? 1 : 0);
+      next.offPeakMessages = state.offPeakMessages + (peak ? 0 : 1);
+      next.unpricedMessages = state.unpricedMessages + (rate === undefined ? 1 : 0);
+      next.lastModel = model.length > 0 ? model : state.lastModel;
+
+      // Split the billed prompt across content categories.
+      let pendingTotal = 0;
+      let contextTotal = 0;
+      for (const category of CATEGORIES) {
+        pendingTotal += Math.max(0, state.pending[category]);
+        contextTotal += Math.max(0, state.breakdown[category].tokens);
+      }
+      for (const category of CATEGORIES) {
+        const entry = next.breakdown[category];
+        const shareMiss = pendingTotal > 0
+          ? Math.max(0, state.pending[category]) / pendingTotal
+          : (contextTotal > 0 ? Math.max(0, entry.tokens) / contextTotal : 0);
+        const shareHit = contextTotal > 0 ? Math.max(0, entry.tokens) / contextTotal : 0;
+        const categoryMiss = missTokens * shareMiss;
+        const categoryHit = hitTokens * shareHit;
+        entry.miss += categoryMiss;
+        entry.hit += categoryHit;
+        if (rate !== undefined) {
+          const categoryMissUsd = categoryMiss * rate.miss / 1e6 * factor;
+          const categoryHitUsd = categoryHit * rate.hit / 1e6 * factor;
+          entry.missUsd += categoryMissUsd;
+          entry.hitUsd += categoryHitUsd;
+          entry.usd += categoryMissUsd + categoryHitUsd;
+        }
+      }
+      next.pending = blankPending();
+    }
+
+    // 2. Apply a surface replacement before adding the new node.
+    if (surface && event.surfaceOp !== null && typeof event.surfaceOp === 'object' && event.surfaceOp.op === 'replace') {
+      const { startSeq, endSeq } = event.surfaceOp;
+      if (Number.isSafeInteger(startSeq) && Number.isSafeInteger(endSeq)) {
+        for (let seq = startSeq; seq <= endSeq; seq += 1) {
+          const parts = next.nodes[seq];
+          if (parts === undefined) continue;
+          for (const [category, value] of parts) {
+            next.breakdown[category].tokens = Math.max(0, next.breakdown[category].tokens - value);
+          }
+          delete next.nodes[seq];
+        }
+      }
+    }
+
+    // 3. Record this event's own content for the calls that follow it.
+    if (surface) {
+      const parts = partsOf(event, state.toolNames).filter(([, value]) => value > 0);
+      if (parts.length > 0) {
+        next.nodes[event.seq] = parts;
+        for (const [category, value] of parts) {
+          next.breakdown[category].tokens += value;
+          next.pending[category] += value;
+        }
+      }
+    }
+
+    // 4. Tool schemas are part of every prompt but never a surface node.
+    if (event.type === 'request/header') {
+      const tools = event.data?.header?.tools;
+      let estimated = 0;
+      if (Array.isArray(tools)) {
+        for (const tool of tools) estimated += estimateText(tool?.name) + estimateText(tool?.description) + estimateText(JSON.stringify(tool?.parameters ?? {})) + 12;
+      }
+      const delta = estimated - state.schemasTokens;
+      if (delta !== 0) {
+        next.schemasTokens = estimated;
+        next.breakdown.schemas.tokens = Math.max(0, next.breakdown.schemas.tokens + delta);
+        if (delta > 0) next.pending.schemas += delta;
+      }
+    }
+
+    // 5. Remember which tool produced a pending result.
+    if (event.type === 'tool/call') {
+      const callId = event.data?.callId;
+      if (typeof callId === 'string') next.toolNames[callId] = event.data.name;
+    }
+    if (event.type === 'tool/result') {
+      const callId = event.data?.message?.source?.callId;
+      if (typeof callId === 'string') delete next.toolNames[callId];
+    }
+
+    return next;
   },
   wire: {
     viewSchema: WIRE_SCHEMA,
@@ -235,6 +464,7 @@ const peakCostProjectionDefinition = {
       offPeakMessages: state.offPeakMessages,
       unpricedMessages: state.unpricedMessages,
       lastModel: state.lastModel,
+      breakdown: state.breakdown,
       peakWindows: PEAK_WINDOWS,
       weekdaysOnly: PEAK_WEEKDAYS_ONLY,
       holidays: PEAK_HOLIDAYS,

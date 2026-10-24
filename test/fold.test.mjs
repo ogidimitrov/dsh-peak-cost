@@ -140,3 +140,105 @@ test('rejects values that would corrupt a projection checkpoint', () => {
   assert.equal(definition.stateSchema.safeParse(definition.init()).success, true);
   assert.throws(() => definition.stateSchema.parse({ ...definition.init(), costUsd: Infinity }));
 });
+
+// --- cost attribution --------------------------------------------------------
+
+const OFF_PEAK = Date.parse('2026-10-23T12:00:00Z');
+const text = (length) => 'x'.repeat(length);
+
+const surface = (type, seq, data, op = 'append') => ({
+  type,
+  seq,
+  time: OFF_PEAK,
+  data,
+  surfaceOp: op,
+});
+
+const systemEvent = (seq, chars) => surface('system/message', seq, {
+  turn: 1,
+  step: 1,
+  message: { role: 'system', content: [{ type: 'text', text: text(chars) }] },
+});
+
+const userEvent = (seq, chars) => surface('user/message', seq, {
+  role: 'user',
+  content: [{ type: 'text', text: text(chars) }],
+});
+
+const toolResultEvent = (seq, callId, chars) => surface('tool/result', seq, {
+  turn: 1,
+  step: 2,
+  message: { role: 'tool', source: { kind: 'tool', callId }, content: [{ type: 'text', text: text(chars) }] },
+});
+
+const replyEvent = (seq, usage) => surface('assistant/message', seq, {
+  turn: 1,
+  step: 1,
+  message: {
+    role: 'assistant',
+    source: { kind: 'model', provider: 'deepseek', model: 'deepseek-flash' },
+    content: [{ type: 'text', text: text(40) }],
+  },
+  stream: [],
+  usage,
+});
+
+test('bills new content as cache-miss input on its first call', () => {
+  let state = definition.apply(state0, systemEvent(1, 400));   // 4 + 100 tokens
+  state = definition.apply(state, userEvent(2, 400));           // 4 + 100 tokens
+  state = definition.apply(state, replyEvent(3, { inputTokens: 1000, outputTokens: 0 }));
+
+  assert.ok(Math.abs(state.breakdown.system.miss - 500) < 0.5, `system miss ${state.breakdown.system.miss}`);
+  assert.ok(Math.abs(state.breakdown.user.miss - 500) < 0.5, `user miss ${state.breakdown.user.miss}`);
+  assert.equal(state.breakdown.system.hit, 0);
+  assert.equal(state.breakdown.system.tokens, 104);
+});
+
+test('bills a search result once as input, then as cache on later calls', () => {
+  let state = definition.apply(state0, systemEvent(1, 400));
+  state = definition.apply(state, userEvent(2, 400));
+  state = definition.apply(state, replyEvent(3, { inputTokens: 1000, outputTokens: 0 }));
+  state = definition.apply(state, {
+    type: 'tool/call', seq: 4, time: OFF_PEAK, data: { turn: 1, step: 2, callId: 'c1', name: 'web_search', arguments: '{}' },
+  });
+  state = definition.apply(state, toolResultEvent(5, 'c1', 8000)); // 4 + 2000 tokens
+  state = definition.apply(state, replyEvent(6, { inputTokens: 500, cacheReadTokens: 2000, outputTokens: 0 }));
+
+  const web = state.breakdown.web;
+  assert.equal(web.tokens, 2004);
+  assert.ok(Math.abs(web.miss - 500 * 2004 / 2018) < 0.5, `web miss ${web.miss}`);
+  assert.ok(web.hit > 1790 && web.hit < 1810, `web hit ${web.hit}`);
+  assert.ok(web.usd > 0);
+  // The whole call's hit tokens are distributed, never multiplied.
+  const hit = Object.values(state.breakdown).reduce((total, entry) => total + entry.hit, 0);
+  const miss = Object.values(state.breakdown).reduce((total, entry) => total + entry.miss, 0);
+  assert.ok(Math.abs(hit - 2000) < 0.5, `hit sum ${hit}`);
+  assert.ok(Math.abs(miss - 1500) < 0.5, `miss sum ${miss}`);
+});
+
+test('subtracts replaced content from the context before pricing the next call', () => {
+  let state = definition.apply(state0, systemEvent(1, 400));
+  state = definition.apply(state, userEvent(2, 400));
+  state = definition.apply(state, replyEvent(3, { inputTokens: 1000, outputTokens: 0 }));
+  assert.equal(state.breakdown.user.tokens, 104);
+  assert.equal(state.breakdown.system.tokens, 104);
+
+  state = definition.apply(state, {
+    type: 'user/message',
+    seq: 7,
+    time: OFF_PEAK,
+    data: { role: 'user', content: [{ type: 'text', text: text(80) }] },
+    surfaceOp: { op: 'replace', startSeq: 1, endSeq: 2 },
+  });
+  assert.equal(state.breakdown.system.tokens, 0);
+  assert.equal(state.breakdown.user.tokens, 24);
+});
+
+test('prices every category at the rate card of the call that sent it', () => {
+  let state = definition.apply(state0, systemEvent(1, 400));
+  state = definition.apply(state, replyEvent(2, { inputTokens: 1000, outputTokens: 0 }));
+  // 1000 miss tokens at $0.30/M, off-peak half price.
+  assert.ok(Math.abs(state.missCostUsd - 1000 * 0.3 / 1e6 * 0.5) < 1e-12);
+  const systemUsd = state.breakdown.system.usd;
+  assert.ok(Math.abs(systemUsd - state.missCostUsd) < 1e-12, 'the only category carries the whole miss');
+});

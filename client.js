@@ -3,13 +3,12 @@
  *
  * Renders one ambient entry below the composer card:
  *
- *     ● Off-peak · $0.0042
+ *     ● Off-peak · ≈ $0.338 · bal $7.27
  *
- * The status is computed from the browser clock against DeepSeek's published
- * peak calendar, so it moves on its own across a boundary. The amount comes
- * from the `peakCost` session projection (Host half), which prices every model
- * call in the durable log at the rate card and billing window that applied
- * when that call ran.
+ * Hovering it opens a themed panel with the cost attribution: where the money
+ * went, split by content category, and for each one what it cost the first time
+ * it entered the context (cache-miss input) versus every later call that re-sent
+ * it (cache-hit input). The Host half owns the numbers; this half only renders.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-peak-cost',
@@ -22,6 +21,9 @@ window.__ModuleLoader__.load({
     /** Fallback calendar for a Session whose projection has no messages yet. */
     const DEFAULT_WINDOWS = [[60, 240], [360, 600]];
 
+    /** Display order fallback; the panel sorts by cost anyway. */
+    const CATEGORY_ORDER = ['web', 'tools', 'user', 'assistant', 'reasoning', 'system', 'schemas'];
+
     const LOCALES = {
       en: {
         'status.peak': 'Peak hours',
@@ -29,18 +31,29 @@ window.__ModuleLoader__.load({
         'aria': 'DeepSeek billing: {status}. Estimated session spend {amount}.',
         'aria.withBalance': 'DeepSeek billing: {status}. Estimated session spend {amount}. Account balance {balance}.',
         'balance.short': 'bal',
-        'tip.balanceTotal': 'Account balance: {balance}',
-        'tip.balanceParts': 'Recharge {recharge} · bonus {bonus}',
-        'tip.window': 'DeepSeek billing window: {status}',
-        'tip.next': 'Changes to {status} in {gap}',
-        'tip.spend': 'Estimated this session: {amount} over {calls} model calls',
-        'tip.tokens': 'Input {input} ({percent}% cache hit) · output {output}',
-        'tip.split': 'Billed: input {miss} + cache {hit} + output {out}',
-        'tip.uncached': 'The same prompt without prompt caching would cost {amount} at list price',
-        'tip.caveat': 'This is a list-price equivalent, not a wallet reading: DeepSeek consumes granted or bonus credit before a topped-up balance, so a topped-up balance can stay flat while this number grows.',
-        'tip.mixed': '{peak} calls at peak, {off} at off-peak',
-        'tip.unpriced': '{count} call(s) billed on an unknown route were excluded',
-        'tip.estimate': 'Estimate from list prices; cached-prefix and discount timing follow the session log.',
+        'panel.calls': '{calls} model calls · {peak} at peak, {off} off-peak',
+        'panel.next': 'Next: {status} in {gap}',
+        'panel.balance': 'Account balance {balance}',
+        'panel.balanceParts': 'Recharge {recharge} · bonus {bonus}',
+        'panel.where': 'Where the money went',
+        'panel.col.category': 'Content',
+        'panel.col.tokens': 'In context',
+        'panel.col.first': 'First time',
+        'panel.col.cached': 'Re-sent',
+        'panel.output': 'Model output',
+        'panel.total': 'Session total',
+        'panel.webHint': 'Web results are billed once as input when they arrive, then as cache on every later call.',
+        'panel.uncached': 'The same prompts without caching: {amount}',
+        'panel.estimate': 'List-price estimate. Category shares are proportional; each call’s totals are the provider’s own numbers.',
+        'panel.caveat': 'A list-price equivalent, not your wallet: grant or bonus credit is consumed before a topped-up balance.',
+        'panel.empty': 'No priced model call yet.',
+        'cat.web': 'Web results',
+        'cat.tools': 'Tool results',
+        'cat.user': 'Your messages',
+        'cat.assistant': 'Assistant replies',
+        'cat.reasoning': 'Model thinking',
+        'cat.system': 'System prompt',
+        'cat.schemas': 'Tool schemas',
         'gap.minutes': '{n} min',
         'gap.hours': '{n} h {m} min',
         'gap.days': '{n} d {h} h',
@@ -51,18 +64,29 @@ window.__ModuleLoader__.load({
         'aria': 'DeepSeek 计费：{status}。本会话预估花费 {amount}。',
         'aria.withBalance': 'DeepSeek 计费：{status}。本会话预估花费 {amount}。账户余额 {balance}。',
         'balance.short': '余额',
-        'tip.balanceTotal': '账户余额：{balance}',
-        'tip.balanceParts': '充值 {recharge} · 赠送 {bonus}',
-        'tip.window': 'DeepSeek 计费时段：{status}',
-        'tip.next': '{gap}后转入{status}',
-        'tip.spend': '本会话预估：{amount}，共 {calls} 次模型调用',
-        'tip.tokens': '输入 {input}（缓存命中 {percent}%）· 输出 {output}',
-        'tip.split': '计费：输入 {miss} + 缓存 {hit} + 输出 {out}',
-        'tip.uncached': '同样的提示若不使用缓存，按标价约为 {amount}',
-        'tip.caveat': '这只是按标价折算的等效金额，不是钱包读数：DeepSeek 会先扣减赠送或奖励额度，因此充值的余额可能保持不变。',
-        'tip.mixed': '高峰 {peak} 次，非高峰 {off} 次',
-        'tip.unpriced': '{count} 次未知路由调用未计价',
-        'tip.estimate': '按官方标价估算；缓存前缀与折扣时段以会话日志为准。',
+        'panel.calls': '{calls} 次模型调用 · 高峰 {peak} 次，非高峰 {off} 次',
+        'panel.next': '下一次切换：{gap}后{status}',
+        'panel.balance': '账户余额 {balance}',
+        'panel.balanceParts': '充值 {recharge} · 赠送 {bonus}',
+        'panel.where': '花费去向',
+        'panel.col.category': '内容',
+        'panel.col.tokens': '上下文',
+        'panel.col.first': '首次',
+        'panel.col.cached': '重复',
+        'panel.output': '模型输出',
+        'panel.total': '会话合计',
+        'panel.webHint': '网页结果首次进入上下文时按输入计费一次，之后每次调用都按缓存计费。',
+        'panel.uncached': '同样的提示若不使用缓存：{amount}',
+        'panel.estimate': '按标价估算。分类按比例分摊；每次调用的总额来自服务商上报。',
+        'panel.caveat': '这只是按标价折算的等效金额，不是钱包读数：赠送额度会先于充值余额被扣减。',
+        'panel.empty': '还没有计费的模型调用。',
+        'cat.web': '网页结果',
+        'cat.tools': '工具结果',
+        'cat.user': '你的消息',
+        'cat.assistant': '助手回复',
+        'cat.reasoning': '模型思考',
+        'cat.system': '系统提示',
+        'cat.schemas': '工具定义',
         'gap.minutes': '{n} 分钟',
         'gap.hours': '{n} 小时 {m} 分',
         'gap.days': '{n} 天 {h} 小时',
@@ -182,7 +206,7 @@ window.__ModuleLoader__.load({
      * The platform reports recharge and bonus wallets separately; DeepSeek spends
      * bonus credit first, so the number a person watches is the sum of both.
      * @param {object | null | undefined} value - `AccountDetails['balance']`.
-     * @returns {{primary: {currency: string, total: number, recharge: number, bonus: number}, all: object[]} | null} totals, or null when unavailable.
+     * @returns {{primary: {currency: string, total: number, recharge: number, bonus: number}, all: object[]} | null} totals.
      */
     function summarizeBalance(value) {
       if (value === null || value === undefined || value.status !== 'ready') return null;
@@ -276,6 +300,29 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Build the per-category rows the panel shows, largest cost first.
+     * @param {object | undefined} usage - the `peakCost` projection value.
+     * @param {(key: string, params?: object) => string} t - translate.
+     * @returns {Array<{key: string, label: string, tokens: number, first: number, cached: number, total: number}>} rows.
+     */
+    function buildRows(usage, t) {
+      const breakdown = usage === undefined || usage === null ? undefined : usage.breakdown;
+      if (breakdown === undefined || breakdown === null) return [];
+      const rows = [];
+      for (const key of CATEGORY_ORDER) {
+        const entry = breakdown[key];
+        if (entry === undefined || entry === null) continue;
+        const first = Number.isFinite(entry.missUsd) ? entry.missUsd : 0;
+        const cached = Number.isFinite(entry.hitUsd) ? entry.hitUsd : 0;
+        const tokens = Number.isFinite(entry.tokens) ? entry.tokens : 0;
+        if (first <= 0 && cached <= 0 && tokens <= 0) continue;
+        rows.push({ key, label: t(`cat.${key}`), tokens, first, cached, total: first + cached });
+      }
+      rows.sort((left, right) => right.total - left.total || right.tokens - left.tokens);
+      return rows;
+    }
+
+    /**
      * Build the dock entry component for one translate function.
      * @param {(key: string, params?: object) => string} t - translate.
      * @param {object} ctx - client context, for the account transport and per-call metadata.
@@ -287,6 +334,12 @@ window.__ModuleLoader__.load({
         const usage = useProjection('peakCost');
         const now = useClock(30000);
         const [balance, setBalance] = React.useState(null);
+        const [open, setOpen] = React.useState(false);
+        const [position, setPosition] = React.useState(null);
+        const rootRef = React.useRef(null);
+        const openTimer = React.useRef(undefined);
+        const closeTimer = React.useRef(undefined);
+
         React.useEffect(() => {
           let live = true;
           let warned = false;
@@ -331,6 +384,44 @@ window.__ModuleLoader__.load({
             window.removeEventListener('focus', onFocus);
           };
         }, []);
+
+        // Keep the fixed-position panel glued to the trigger while it is open.
+        React.useEffect(() => {
+          if (!open) {
+            setPosition(null);
+            return undefined;
+          }
+          const place = () => {
+            const element = rootRef.current;
+            if (element === null || element === undefined || typeof element.getBoundingClientRect !== 'function') return;
+            const rect = element.getBoundingClientRect();
+            const width = Math.min(420, Math.max(280, window.innerWidth - 24));
+            const left = Math.min(Math.max(12, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 12);
+            setPosition({ left, width, bottom: window.innerHeight - rect.top + 10 });
+          };
+          place();
+          window.addEventListener('scroll', place, true);
+          window.addEventListener('resize', place);
+          return () => {
+            window.removeEventListener('scroll', place, true);
+            window.removeEventListener('resize', place);
+          };
+        }, [open]);
+
+        React.useEffect(() => {
+          if (!open) return undefined;
+          const onKeyDown = (event) => {
+            if (event.key === 'Escape') setOpen(false);
+          };
+          document.addEventListener('keydown', onKeyDown);
+          return () => document.removeEventListener('keydown', onKeyDown);
+        }, [open]);
+
+        React.useEffect(() => () => {
+          window.clearTimeout(openTimer.current);
+          window.clearTimeout(closeTimer.current);
+        }, []);
+
         const windows = usage !== undefined && usage !== null && Array.isArray(usage.peakWindows)
           ? usage.peakWindows
           : DEFAULT_WINDOWS;
@@ -343,56 +434,161 @@ window.__ModuleLoader__.load({
         const peak = isPeakAt(now, windows, weekdaysOnly, holidays);
         const status = peak ? t('status.peak') : t('status.offPeak');
         const amount = formatUsd(usage !== undefined && usage !== null ? usage.costUsd : 0);
+        const money = balance === null ? undefined : formatMoney(balance.primary.currency, balance.primary.total);
+        const rows = buildRows(usage, t);
+        const calls = usage !== undefined && usage !== null && Number.isFinite(usage.messages) ? usage.messages : 0;
+        const output = usage !== undefined && usage !== null && Number.isFinite(usage.outCostUsd) ? usage.outCostUsd : 0;
         const flip = nextFlip(now, windows, weekdaysOnly, holidays);
-        const lines = [];
-        lines.push(t('tip.window', { status }));
-        if (flip !== undefined) {
-          lines.push(t('tip.next', {
+
+        const enter = () => {
+          window.clearTimeout(closeTimer.current);
+          window.clearTimeout(openTimer.current);
+          openTimer.current = window.setTimeout(() => setOpen(true), 120);
+        };
+        const leave = () => {
+          window.clearTimeout(openTimer.current);
+          window.clearTimeout(closeTimer.current);
+          closeTimer.current = window.setTimeout(() => setOpen(false), 160);
+        };
+
+        const cell = (key, text, extra) => h('span', {
+          key,
+          style: { textAlign: 'right', fontVariantNumeric: 'tabular-nums', ...extra },
+        }, text);
+
+        const grid = '1fr 62px 66px 62px';
+
+        const panel = open ? h('div', {
+          key: 'panel',
+          role: 'tooltip',
+          'data-testid': 'peak-cost-panel',
+          style: {
+            position: 'fixed',
+            left: position === null ? 12 : position.left,
+            bottom: position === null ? 64 : position.bottom,
+            width: position === null ? 380 : position.width,
+            zIndex: 60,
+            boxSizing: 'border-box',
+            padding: '10px 12px',
+            background: 'var(--dsw-specific-menu)',
+            color: 'var(--dsw-alias-label-primary)',
+            border: '1px solid var(--dsw-alias-border-l1)',
+            borderRadius: '10px',
+            boxShadow: 'var(--dsw-elevation-panel)',
+            fontSize: '12px',
+            lineHeight: '18px',
+            maxHeight: '60vh',
+            overflowY: 'auto',
+          },
+        }, [
+          h('div', {
+            key: 'head',
+            style: { display: 'flex', alignItems: 'baseline', gap: '6px', marginBottom: '2px' },
+          }, [
+            h('span', { key: 's', style: { color: 'var(--dsw-alias-label-secondary)' } }, status),
+            h('span', { key: 'sep', style: { color: 'var(--dsw-alias-label-secondary)', opacity: 0.6 } }, '·'),
+            h('span', { key: 'amt', style: { fontWeight: 600 } }, `≈ ${amount}`),
+          ]),
+          h('div', { key: 'calls', style: { color: 'var(--dsw-alias-label-secondary)' } }, t('panel.calls', {
+            calls,
+            peak: usage?.peakMessages ?? 0,
+            off: usage?.offPeakMessages ?? 0,
+          })),
+          money === undefined ? null : h('div', {
+            key: 'bal',
+            style: { color: 'var(--dsw-alias-label-secondary)' },
+          }, [
+            h('span', { key: 'label' }, t('panel.balance', { balance: money })),
+            h('span', { key: 'parts' }, ` · ${t('panel.balanceParts', {
+              recharge: formatMoney(balance.primary.currency, balance.primary.recharge),
+              bonus: formatMoney(balance.primary.currency, balance.primary.bonus),
+            })}`),
+          ]),
+          flip === undefined ? null : h('div', {
+            key: 'flip',
+            style: { color: 'var(--dsw-alias-label-secondary)' },
+          }, t('panel.next', {
             status: peak ? t('status.offPeak') : t('status.peak'),
             gap: formatGap(flip - now, t),
-          }));
-        }
-        if (usage !== undefined && usage !== null && (usage.messages ?? 0) > 0) {
-          const promptTokens = (usage.inputTokens ?? 0) + (usage.hitTokens ?? 0);
-          const percent = promptTokens > 0
-            ? Math.round(((usage.hitTokens ?? 0) / promptTokens) * 1000) / 10
-            : 0;
-          lines.push(t('tip.spend', { amount, calls: usage.messages }));
-          lines.push(t('tip.tokens', {
-            input: formatTokens(usage.inputTokens),
-            percent,
-            output: formatTokens(usage.outputTokens),
-          }));
-          lines.push(t('tip.split', {
-            miss: formatUsd(usage.missCostUsd ?? 0),
-            hit: formatUsd(usage.hitCostUsd ?? 0),
-            out: formatUsd(usage.outCostUsd ?? 0),
-          }));
-          if ((usage.uncachedCostUsd ?? 0) > 0) {
-            lines.push(t('tip.uncached', { amount: formatUsd(usage.uncachedCostUsd) }));
-          }
-          if ((usage.peakMessages ?? 0) > 0 && (usage.offPeakMessages ?? 0) > 0) {
-            lines.push(t('tip.mixed', { peak: usage.peakMessages, off: usage.offPeakMessages }));
-          }
-          if ((usage.unpricedMessages ?? 0) > 0) {
-            lines.push(t('tip.unpriced', { count: usage.unpricedMessages }));
-          }
-          lines.push(t('tip.estimate'));
-          lines.push(t('tip.caveat'));
-        }
-        const money = balance === null
-          ? undefined
-          : formatMoney(balance.primary.currency, balance.primary.total);
-        if (money !== undefined) {
-          lines.push(t('tip.balanceTotal', { balance: money }));
-          lines.push(t('tip.balanceParts', {
-            recharge: formatMoney(balance.primary.currency, balance.primary.recharge),
-            bonus: formatMoney(balance.primary.currency, balance.primary.bonus),
-          }));
-        }
+          })),
+          h('div', {
+            key: 'rule',
+            style: { height: '1px', background: 'var(--dsw-alias-border-l1)', margin: '8px 0' },
+          }),
+          h('div', { key: 'title', style: { fontWeight: 600, marginBottom: '4px' } }, t('panel.where')),
+          rows.length === 0
+            ? h('div', { key: 'empty', style: { color: 'var(--dsw-alias-label-secondary)' } }, t('panel.empty'))
+            : h('div', { key: 'table' }, [
+              h('div', {
+                key: 'header',
+                style: { display: 'grid', gridTemplateColumns: grid, gap: '6px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '2px' },
+              }, [
+                h('span', { key: 'c0' }, t('panel.col.category')),
+                cell('c1', t('panel.col.tokens')),
+                cell('c2', t('panel.col.first')),
+                cell('c3', t('panel.col.cached')),
+              ]),
+              ...rows.map((row) => h('div', {
+                key: row.key,
+                style: { display: 'grid', gridTemplateColumns: grid, gap: '6px' },
+              }, [
+                h('span', { key: 'label', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.label),
+                cell('tokens', formatTokens(row.tokens), { color: 'var(--dsw-alias-label-secondary)' }),
+                cell('first', formatUsd(row.first)),
+                cell('cached', formatUsd(row.cached)),
+              ])),
+              h('div', {
+                key: 'output',
+                style: { display: 'grid', gridTemplateColumns: grid, gap: '6px', marginTop: '4px' },
+              }, [
+                h('span', { key: 'label' }, t('panel.output')),
+                cell('tokens', ''),
+                h('span', {
+                  key: 'value',
+                  style: { gridColumn: 'span 2', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+                }, formatUsd(output)),
+              ]),
+              h('div', {
+                key: 'total',
+                style: {
+                  display: 'grid',
+                  gridTemplateColumns: grid,
+                  gap: '6px',
+                  marginTop: '4px',
+                  paddingTop: '4px',
+                  borderTop: '1px solid var(--dsw-alias-border-l1)',
+                  fontWeight: 600,
+                },
+              }, [
+                h('span', { key: 'label' }, t('panel.total')),
+                cell('tokens', ''),
+                h('span', {
+                  key: 'sum',
+                  style: { gridColumn: 'span 2', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+                }, formatUsd(usage !== undefined && usage !== null && Number.isFinite(usage.costUsd) ? usage.costUsd : 0)),
+              ]),
+            ]),
+          h('div', {
+            key: 'notes',
+            style: { marginTop: '8px', color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', lineHeight: '16px' },
+          }, [
+            h('div', { key: 'web' }, t('panel.webHint')),
+            h('div', { key: 'uncached' }, t('panel.uncached', {
+              amount: formatUsd(usage !== undefined && usage !== null ? usage.uncachedCostUsd : 0),
+            })),
+            h('div', { key: 'estimate' }, t('panel.estimate')),
+            h('div', { key: 'caveat' }, t('panel.caveat')),
+          ]),
+        ]) : null;
+
         return h('span', {
+          ref: rootRef,
           'data-testid': 'peak-cost',
-          title: lines.join('\n'),
+          onMouseEnter: enter,
+          onMouseLeave: leave,
+          onFocus: enter,
+          onBlur: leave,
+          tabIndex: 0,
           'aria-label': money === undefined
             ? t('aria', { status, amount })
             : t('aria.withBalance', { status, amount, balance: money }),
@@ -400,12 +596,14 @@ window.__ModuleLoader__.load({
             display: 'inline-flex',
             alignItems: 'center',
             gap: '6px',
+            position: 'relative',
             fontSize: '12px',
             lineHeight: '20px',
             color: 'var(--dsw-alias-label-secondary)',
             whiteSpace: 'nowrap',
             userSelect: 'none',
             cursor: 'default',
+            outline: 'none',
           },
         }, [
           h('span', {
@@ -445,6 +643,7 @@ window.__ModuleLoader__.load({
               }, money),
             ]),
           ],
+          panel,
         ]);
       };
     }
@@ -509,7 +708,7 @@ window.__ModuleLoader__.load({
         }, createEntry(t, ctx, () => account)));
       },
       /** Pure helpers exposed for the unit suite; the loader ignores them. */
-      test: { summarizeBalance, formatMoney, clientMetadata },
+      test: { summarizeBalance, formatMoney, clientMetadata, buildRows },
     };
   },
 });

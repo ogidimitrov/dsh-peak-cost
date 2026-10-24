@@ -48,6 +48,18 @@ globalThis.window = {
   },
   setInterval: () => 0,
   clearInterval: () => {},
+  setTimeout: (callback) => {
+    callback();
+    return 0;
+  },
+  clearTimeout: () => {},
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  innerWidth: 1280,
+  innerHeight: 800,
+};
+
+globalThis.document = {
   addEventListener: () => {},
   removeEventListener: () => {},
 };
@@ -88,6 +100,32 @@ async function settle(component, value, nowIso) {
   return render(component, value, nowIso);
 }
 
+/** Find the hover panel node in a rendered tree. */
+function findPanel(node) {
+  if (node === null || node === undefined) return undefined;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findPanel(child);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  if (typeof node !== 'object') return undefined;
+  if (node.props !== undefined && node.props['data-testid'] === 'peak-cost-panel') return node;
+  return findPanel(node.children);
+}
+
+/** Render, hover the line, render again, and return the open panel. */
+function openPanel(component, value, nowIso) {
+  const trigger = render(component, value, nowIso);
+  assert.equal(typeof trigger.props.onMouseEnter, 'function');
+  trigger.props.onMouseEnter();
+  const next = render(component, value, nowIso);
+  const panel = findPanel(next);
+  assert.ok(panel !== undefined, 'panel renders after hover');
+  return panel;
+}
+
 const liveValue = {
   costUsd: 0.06312069000000001,
   missCostUsd: 0.01736145,
@@ -103,6 +141,15 @@ const liveValue = {
   offPeakMessages: 62,
   unpricedMessages: 0,
   lastModel: 'deepseek-flash',
+  breakdown: {
+    schemas: { tokens: 8815, miss: 8815, hit: 0, usd: 0.0013, missUsd: 0.0013, hitUsd: 0 },
+    system: { tokens: 1448, miss: 1448, hit: 0, usd: 0.0002, missUsd: 0.0002, hitUsd: 0 },
+    user: { tokens: 4200, miss: 2000, hit: 2200, usd: 0.0031, missUsd: 0.0003, hitUsd: 0.0028 },
+    web: { tokens: 18000, miss: 9000, hit: 9000, usd: 0.0124, missUsd: 0.0014, hitUsd: 0.011 },
+    tools: { tokens: 40000, miss: 30000, hit: 10000, usd: 0.0261, missUsd: 0.0214, hitUsd: 0.0047 },
+    assistant: { tokens: 12000, miss: 12000, hit: 0, usd: 0.0048, missUsd: 0.0048, hitUsd: 0 },
+    reasoning: { tokens: 6000, miss: 6000, hit: 0, usd: 0.0024, missUsd: 0.0024, hitUsd: 0 },
+  },
   peakWindows: [[60, 240], [360, 600]],
   weekdaysOnly: true,
   holidays: [],
@@ -201,22 +248,40 @@ test('renders an approximate off-peak pill with the session amount', () => {
 });
 
 test('tooltip explains window, next change, spend and the cache discount', () => {
-  const tree = render(registration.component, liveValue, '2026-10-23T19:51:00Z');
-  const title = tree.props.title;
-  assert.match(title, /DeepSeek billing window: Off-peak/);
-  assert.match(title, /Changes to Peak hours in 2 d 5 h/);
-  assert.match(title, /Estimated this session: \$0\.063 over 62 model calls/);
-  assert.match(title, /Input 116k \(98\.1% cache hit\) · output 46\.8k/);
-  assert.match(title, /Billed: input \$0\.017 \+ cache \$0\.018 \+ output \$0\.028/);
-  assert.match(title, /without prompt caching would cost \$0\.902 at list price/);
-  assert.match(title, /list-price equivalent, not a wallet reading/);
-  assert.match(title, /Estimate from list prices/);
+  const tree = openPanel(registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const copy = texts(tree).join(' ');
+  assert.match(copy, /Where the money went/);
+  assert.match(copy, /Content/);
+  assert.match(copy, /In context/);
+  assert.match(copy, /First time/);
+  assert.match(copy, /Re-sent/);
+  assert.match(copy, /Web results/);
+  assert.match(copy, /Tool results/);
+  assert.match(copy, /Model thinking/);
+  assert.match(copy, /Session total/);
+  assert.match(copy, /Web results are billed once as input/);
+  assert.match(copy, /The same prompts without caching: \$0\.902/);
+  assert.match(copy, /62 model calls · 0 at peak, 62 off-peak/);
+});
+
+test('sorts attribution rows by cost and hides empty categories', () => {
+  const { buildRows } = loaded.factory(requireStub).test;
+  const dict = Object.fromEntries(Object.entries(base.dicts[0].dicts.en));
+  const t = (key) => dict[key] ?? key;
+  const rows = buildRows(liveValue, t);
+  assert.deepEqual(rows.map((row) => row.key), ['tools', 'web', 'assistant', 'user', 'reasoning', 'schemas', 'system']);
+  assert.equal(rows[0].label, 'Tool results');
+  assert.ok(rows.every((row) => row.total > 0));
+  assert.deepEqual(buildRows(undefined, t), []);
+  const empty = buildRows({
+    breakdown: { web: { tokens: 0, miss: 0, hit: 0, usd: 0, missUsd: 0, hitUsd: 0 } },
+  }, t);
+  assert.deepEqual(empty, []);
 });
 
 test('switches to peak inside a peak window', () => {
   const tree = render(freshComponent(), liveValue, '2026-10-23T02:30:00Z');
   assert.match(texts(tree).join(' '), /Peak hours/);
-  assert.match(tree.props.title, /Changes to Off-peak in/);
   assert.equal(tree.props['aria-label'], 'DeepSeek billing: Peak hours. Estimated session spend $0.063.');
 });
 
@@ -225,7 +290,6 @@ test('shows zero spend and the live window before the first model call', () => {
   const copy = texts(tree).join(' ');
   assert.match(copy, /Off-peak/);
   assert.match(copy, /\$0\.00/);
-  assert.match(tree.props.title, /DeepSeek billing window: Off-peak/);
 });
 
 test('folds recharge and bonus wallets into one balance per currency', () => {
@@ -268,8 +332,10 @@ test('renders the account balance beside the session cost', async () => {
   const copy = texts(tree).join(' ');
   assert.match(copy, /≈ \$0\.063/);
   assert.match(copy, /bal ¥7\.26/);
-  assert.match(tree.props.title, /Account balance: ¥7\.26/);
-  assert.match(tree.props.title, /Recharge ¥6\.98 · bonus ¥0\.28/);
+  const panel = openPanel(withAccount.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const panelCopy = texts(panel).join(' ');
+  assert.match(panelCopy, /Account balance ¥7\.26/);
+  assert.match(panelCopy, /Recharge ¥6\.98 · bonus ¥0\.28/);
   assert.equal(
     tree.props['aria-label'],
     'DeepSeek billing: Off-peak. Estimated session spend $0.063. Account balance ¥7.26.',
@@ -284,7 +350,6 @@ test('omits the balance when the account transport is missing or unauthorized', 
   render(signedOut.registration.component, liveValue, '2026-10-23T19:51:00Z');
   const tree = await settle(signedOut.registration.component, liveValue, '2026-10-23T19:51:00Z');
   assert.doesNotMatch(texts(tree).join(' '), /bal/);
-  assert.doesNotMatch(tree.props.title, /Account balance/);
   assert.equal(tree.props['aria-label'], 'DeepSeek billing: Off-peak. Estimated session spend $0.063.');
 
   const failing = makeContext({
@@ -314,8 +379,10 @@ test('finds the account through scoped injection when the root context has no re
   const tree = await settle(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
   const copy = texts(tree).join(' ');
   assert.match(copy, /bal \$7\.26/);
-  assert.match(tree.props.title, /Account balance: \$7\.26/);
-  assert.match(tree.props.title, /Recharge \$7\.26 · bonus \$0\.00/);
+  const panel = openPanel(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const panelCopy = texts(panel).join(' ');
+  assert.match(panelCopy, /Account balance \$7\.26/);
+  assert.match(panelCopy, /Recharge \$7\.26 · bonus \$0\.00/);
 });
 
 test('shows both wallets even when the bonus is empty', async () => {
@@ -332,6 +399,9 @@ test('shows both wallets even when the bonus is empty', async () => {
   loaded.factory(requireStub).apply(made.ctx);
   render(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
   const tree = await settle(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
-  assert.match(tree.props.title, /Account balance: ¥12\.40/);
-  assert.match(tree.props.title, /Recharge ¥12\.40 · bonus ¥0\.00/);
+  assert.match(texts(tree).join(' '), /bal ¥12\.40/);
+  const panel = openPanel(made.registration.component, liveValue, '2026-10-23T19:51:00Z');
+  const panelCopy = texts(panel).join(' ');
+  assert.match(panelCopy, /Account balance ¥12\.40/);
+  assert.match(panelCopy, /Recharge ¥12\.40 · bonus ¥0\.00/);
 });

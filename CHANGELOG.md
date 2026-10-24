@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-24
+
+### Added
+
+- A themed hover panel in place of the native tooltip: fixed-positioned above the composer, dismissed on leave or Escape, styled with the host's menu, border and elevation tokens.
+- Cost attribution per content category — web results, tool results, your messages, assistant replies, model thinking, system prompt and tool schemas — with a **first time** (cache-miss) and **re-sent** (cache-hit) column per row, plus model output and the session total.
+- A rolling context model: new content is billed as input on the call that first carries it and as cache on every later call; replaced or compacted content is subtracted as it leaves the surface.
+
+### Changed
+
+- The projection state version is 3, so existing session checkpoints refold from the log.
+
 ## [1.3.2] - 2026-10-24
 
 ### Added
