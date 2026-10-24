@@ -259,9 +259,8 @@ test('tooltip explains window, next change, spend and the cache discount', () =>
   assert.match(copy, /Tool results/);
   assert.match(copy, /Model thinking/);
   assert.match(copy, /Session total/);
-  assert.match(copy, /Web results are billed once as input/);
-  assert.match(copy, /The same prompts without caching: \$0\.902/);
   assert.match(copy, /62 model calls · 0 at peak, 62 off-peak/);
+  assert.doesNotMatch(copy, /billed once as input/, 'the footer notes are gone');
 });
 
 test('sorts attribution rows by cost and hides empty categories', () => {

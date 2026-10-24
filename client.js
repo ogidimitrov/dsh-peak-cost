@@ -42,10 +42,6 @@ window.__ModuleLoader__.load({
         'panel.col.cached': 'Re-sent',
         'panel.output': 'Model output',
         'panel.total': 'Session total',
-        'panel.webHint': 'Web results are billed once as input when they arrive, then as cache on every later call.',
-        'panel.uncached': 'The same prompts without caching: {amount}',
-        'panel.estimate': 'List-price estimate. Category shares are proportional; each call’s totals are the provider’s own numbers.',
-        'panel.caveat': 'A list-price equivalent, not your wallet: grant or bonus credit is consumed before a topped-up balance.',
         'panel.empty': 'No priced model call yet.',
         'cat.web': 'Web results',
         'cat.tools': 'Tool results',
@@ -75,10 +71,6 @@ window.__ModuleLoader__.load({
         'panel.col.cached': '重复',
         'panel.output': '模型输出',
         'panel.total': '会话合计',
-        'panel.webHint': '网页结果首次进入上下文时按输入计费一次，之后每次调用都按缓存计费。',
-        'panel.uncached': '同样的提示若不使用缓存：{amount}',
-        'panel.estimate': '按标价估算。分类按比例分摊；每次调用的总额来自服务商上报。',
-        'panel.caveat': '这只是按标价折算的等效金额，不是钱包读数：赠送额度会先于充值余额被扣减。',
         'panel.empty': '还没有计费的模型调用。',
         'cat.web': '网页结果',
         'cat.tools': '工具结果',
@@ -470,7 +462,10 @@ window.__ModuleLoader__.load({
             zIndex: 60,
             boxSizing: 'border-box',
             padding: '10px 12px',
-            background: 'var(--dsw-specific-menu)',
+            // Opaque: the menu token may be translucent, so it is composited
+            // over the opaque application base instead of used alone.
+            backgroundColor: 'var(--dsw-alias-bg-base)',
+            backgroundImage: 'linear-gradient(var(--dsw-specific-menu), var(--dsw-specific-menu))',
             color: 'var(--dsw-alias-label-primary)',
             border: '1px solid var(--dsw-alias-border-l1)',
             borderRadius: '10px',
@@ -568,17 +563,6 @@ window.__ModuleLoader__.load({
                 }, formatUsd(usage !== undefined && usage !== null && Number.isFinite(usage.costUsd) ? usage.costUsd : 0)),
               ]),
             ]),
-          h('div', {
-            key: 'notes',
-            style: { marginTop: '8px', color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', lineHeight: '16px' },
-          }, [
-            h('div', { key: 'web' }, t('panel.webHint')),
-            h('div', { key: 'uncached' }, t('panel.uncached', {
-              amount: formatUsd(usage !== undefined && usage !== null ? usage.uncachedCostUsd : 0),
-            })),
-            h('div', { key: 'estimate' }, t('panel.estimate')),
-            h('div', { key: 'caveat' }, t('panel.caveat')),
-          ]),
         ]) : null;
 
         return h('span', {

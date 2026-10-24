@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-24
+
+### Changed
+
+- The hover panel is opaque: the menu tint is composited over the opaque application base rather than rendered translucent over the conversation.
+
+### Removed
+
+- The explanatory footer under **Session total** — the web-result note, the no-cache counterfactual, the estimate note and the wallet caveat. The panel now ends at the total.
+
 ## [1.4.0] - 2026-10-24
 
 ### Added

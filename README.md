@@ -119,7 +119,7 @@ A real session from this plugin, mid-conversation, off-peak on `deepseek-flash`:
 | output | 102,878 | $0.60 / 1M | $0.062 |
 | **total** | | | **$0.155** |
 
-The same 22M prompt tokens billed without prompt caching would be **$3.36** at the miss rate. The tooltip shows this line for the session you are looking at, so the discount is visible rather than assumed.
+The same 22M prompt tokens billed without prompt caching would be **$3.36** at the miss rate; the per-row **First time** / **Re-sent** split in the panel shows the same discount for the session you are looking at.
 
 ### Why this number and your balance can disagree
 
