@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-25
+
+### Fixed
+
+- The hover panel is rendered through a portal into `document.body` instead of inside the composer. A `position: fixed` child is clipped and re-anchored by any ancestor that creates a containing block — the composer does so in a non-maximized window — which collapsed the panel to a sliver at the bottom edge.
+
+### Added
+
+- The panel flips below the trigger when there is not enough room above it, and its height is capped to the space actually available.
+
 ## [1.4.1] - 2026-10-24
 
 ### Changed

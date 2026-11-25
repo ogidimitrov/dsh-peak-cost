@@ -9,6 +9,7 @@ import test from 'node:test';
  */
 
 const hookStores = new WeakMap();
+const refStores = new WeakMap();
 let hookCursor = 0;
 let currentComponent;
 
@@ -27,7 +28,11 @@ const React = {
     effect();
   },
   useRef(value) {
-    return { current: value };
+    const store = refStores.get(currentComponent) ?? [];
+    refStores.set(currentComponent, store);
+    const slot = hookCursor++;
+    if (!(slot in store)) store[slot] = { current: value };
+    return store[slot];
   },
   memo(component) {
     return component;
@@ -36,6 +41,14 @@ const React = {
 
 const requireStub = (name) => {
   if (name === 'react') return React;
+  if (name === 'react-dom') {
+    return {
+      createPortal(node, container) {
+        assert.equal(container, globalThis.document.body, 'the panel is portaled to document.body');
+        return node;
+      },
+    };
+  }
   throw new Error(`unexpected require: ${name}`);
 };
 
@@ -60,6 +73,7 @@ globalThis.window = {
 };
 
 globalThis.document = {
+  body: { nodeName: 'BODY' },
   addEventListener: () => {},
   removeEventListener: () => {},
 };
@@ -245,6 +259,29 @@ test('renders an approximate off-peak pill with the session amount', () => {
   assert.match(copy, /≈ \$0\.063/);
   assert.doesNotMatch(copy, /Peak hours/);
   assert.equal(tree.props['aria-label'], 'DeepSeek billing: Off-peak. Estimated session spend $0.063.');
+});
+
+test('keeps the portaled panel open while the pointer is over it', () => {
+  const component = freshComponent();
+  const iso = '2026-10-23T19:51:00Z';
+  const trigger = render(component, liveValue, iso);
+  trigger.props.onMouseEnter();
+
+  let tree = render(component, liveValue, iso);
+  let panel = findPanel(tree);
+  assert.ok(panel !== undefined, 'panel opens');
+
+  // The portal puts the panel outside the trigger's DOM subtree, so leaving the
+  // pill must not close it while the pointer moved into the panel.
+  panel.props.onMouseEnter();
+  trigger.props.onMouseLeave();
+  tree = render(component, liveValue, iso);
+  assert.ok(findPanel(tree) !== undefined, 'panel stays open over the pointer');
+
+  panel = findPanel(tree);
+  panel.props.onMouseLeave();
+  tree = render(component, liveValue, iso);
+  assert.equal(findPanel(tree), undefined, 'panel closes after leaving it');
 });
 
 test('tooltip explains window, next change, spend and the cache discount', () => {

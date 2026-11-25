@@ -15,6 +15,18 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
+    // A portal keeps the panel out of the composer's subtree. Inside it, a
+    // `position: fixed` panel is clipped (and re-anchored) by any ancestor that
+    // creates a containing block — the composer does that in narrow windows,
+    // which is why the panel collapsed to a sliver when the window wasn't
+    // maximized. `react-dom` is part of the module table the loader exposes.
+    let createPortal;
+    try {
+      const reactDom = require('react-dom');
+      if (reactDom !== null && typeof reactDom.createPortal === 'function') createPortal = reactDom.createPortal;
+    } catch {
+      createPortal = undefined;
+    }
 
     const NS = 'peak-cost';
 
@@ -377,7 +389,8 @@ window.__ModuleLoader__.load({
           };
         }, []);
 
-        // Keep the fixed-position panel glued to the trigger while it is open.
+        // Keep the fixed-position panel glued to the trigger while it is open,
+        // flipping below it when there is not enough room above.
         React.useEffect(() => {
           if (!open) {
             setPosition(null);
@@ -388,8 +401,16 @@ window.__ModuleLoader__.load({
             if (element === null || element === undefined || typeof element.getBoundingClientRect !== 'function') return;
             const rect = element.getBoundingClientRect();
             const width = Math.min(420, Math.max(280, window.innerWidth - 24));
-            const left = Math.min(Math.max(12, rect.left + rect.width / 2 - width / 2), window.innerWidth - width - 12);
-            setPosition({ left, width, bottom: window.innerHeight - rect.top + 10 });
+            const left = Math.min(
+              Math.max(12, rect.left + rect.width / 2 - width / 2),
+              Math.max(12, window.innerWidth - width - 12),
+            );
+            const above = rect.top - 12;
+            const below = window.innerHeight - rect.bottom - 12;
+            const maxHeight = Math.max(180, Math.min(window.innerHeight * 0.6, above));
+            setPosition(above >= 320
+              ? { left, width, bottom: window.innerHeight - rect.top + 10, maxHeight }
+              : { left, width, top: rect.bottom + 10, maxHeight: Math.max(180, Math.min(window.innerHeight * 0.6, below)) });
           };
           place();
           window.addEventListener('scroll', place, true);
@@ -432,6 +453,7 @@ window.__ModuleLoader__.load({
         const output = usage !== undefined && usage !== null && Number.isFinite(usage.outCostUsd) ? usage.outCostUsd : 0;
         const flip = nextFlip(now, windows, weekdaysOnly, holidays);
 
+        const overPanel = React.useRef(false);
         const enter = () => {
           window.clearTimeout(closeTimer.current);
           window.clearTimeout(openTimer.current);
@@ -440,7 +462,9 @@ window.__ModuleLoader__.load({
         const leave = () => {
           window.clearTimeout(openTimer.current);
           window.clearTimeout(closeTimer.current);
-          closeTimer.current = window.setTimeout(() => setOpen(false), 160);
+          closeTimer.current = window.setTimeout(() => {
+            if (!overPanel.current) setOpen(false);
+          }, 160);
         };
 
         const cell = (key, text, extra) => h('span', {
@@ -454,12 +478,22 @@ window.__ModuleLoader__.load({
           key: 'panel',
           role: 'tooltip',
           'data-testid': 'peak-cost-panel',
+          onMouseEnter: () => {
+            overPanel.current = true;
+            window.clearTimeout(closeTimer.current);
+          },
+          onMouseLeave: () => {
+            overPanel.current = false;
+            leave();
+          },
           style: {
             position: 'fixed',
             left: position === null ? 12 : position.left,
+            top: position === null ? undefined : position.top,
             bottom: position === null ? 64 : position.bottom,
             width: position === null ? 380 : position.width,
-            zIndex: 60,
+            zIndex: 1000,
+            pointerEvents: 'auto',
             boxSizing: 'border-box',
             padding: '10px 12px',
             // Opaque: the menu token may be translucent, so it is composited
@@ -472,7 +506,7 @@ window.__ModuleLoader__.load({
             boxShadow: 'var(--dsw-elevation-panel)',
             fontSize: '12px',
             lineHeight: '18px',
-            maxHeight: '60vh',
+            maxHeight: position === null ? '60vh' : position.maxHeight,
             overflowY: 'auto',
           },
         }, [
@@ -627,7 +661,7 @@ window.__ModuleLoader__.load({
               }, money),
             ]),
           ],
-          panel,
+          panel === null ? null : (createPortal === undefined ? panel : createPortal(panel, document.body)),
         ]);
       };
     }
