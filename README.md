@@ -89,6 +89,10 @@ The package is a Harness **bundle**: it declares `dsh.bundle.patch` and a `dsh.c
 
 Install the package spec `github:ogidimitrov/dsh-peak-cost` as a bundle — from the Plugins page of the app, or from an agent session through the plugin manager's `install_bundle` action with that spec as the target.
 
+### npm
+
+Publishing to npm is wired but opt-in: the `Publish npm` workflow runs when a GitHub release is published (or manually from the Actions tab), verifies the bundle, and runs `npm publish --provenance --access public`. It needs a repository secret named `NPM_TOKEN` — an npm automation token — and skips cleanly with a notice when that secret is absent, so the workflow never goes red before the account is connected. Once published, `dsh plugin add dsh-peak-cost` installs it prebuilt, with no build approval.
+
 The plugin needs a Harness build that provides the session projection registry, the `conversation.composer.dock` slot, and the client locale service — that is, the current DeepSeek Harness desktop/web app. It has no npm dependencies and no build step.
 
 To remove it, uninstall the bundle from the same Plugins page.

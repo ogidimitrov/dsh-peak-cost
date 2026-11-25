@@ -1,0 +1,47 @@
+name: Publish npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Skip without a token
+        if: ${{ env.NODE_AUTH_TOKEN == '' }}
+        run: |
+          echo "::notice::NPM_TOKEN is not configured, so nothing was published."
+          echo "Add the repository secret NPM_TOKEN (an npm automation token) to publish from this workflow."
+
+      - name: Verify
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: |
+          node scripts/check-manifest.mjs
+          node --test
+
+      - name: Publish
+        if: ${{ env.NODE_AUTH_TOKEN != '' }}
+        run: npm publish --provenance --access public
